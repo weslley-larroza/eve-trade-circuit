@@ -1,9 +1,29 @@
-# EVE Market Scanner — Arbitragem hisec (compra/venda instantânea)
+# eve-trade-circuit
 
-Escaneia os 5 grandes hubs hisec (Jita, Amarr, Dodixie, Rens, Hek) usando a
-**ESI oficial da CCP** (dados de mercado são públicos, sem autenticação) e
-lista os itens mais lucrativos para comprar barato num hub, haulear e
-vender direto (instant-sell) em outro.
+Ferramenta de arbitragem de mercado hisec pra EVE Online: escaneia os 5
+grandes hubs (Jita, Amarr, Dodixie, Rens, Hek) usando a **ESI oficial da
+CCP** (dados públicos, sem autenticação) e monta desde uma lista simples
+de "compre aqui, venda ali" até um circuito completo de hauling com
+rota, cargo e budget otimizados.
+
+## Recursos
+
+- **Scanner de arbitragem instantânea** — desce no livro de ofertas de
+  verdade (não só a melhor ordem) pra achar a quantidade máxima que
+  ainda dá lucro entre qualquer par de hubs.
+- **Interface web local** (`webapp.py`) — tabela de oportunidades,
+  cálculo de rota até compra/venda, e planejador de circuito, tudo no
+  navegador, sem instalar nada além de Python.
+- **Planejador de circuito (loop fechado)** — dado seu cargo hold (m³)
+  e budget (ISK), monta o carregamento ótimo pra cada perna, priorizando
+  sempre o maior lucro por m³.
+- **Otimização automática de ordem** — testa todas as combinações de
+  visita aos hubs escolhidos e escolhe a que maximiza lucro menos uma
+  penalidade opcional por distância (jumps).
+- **CLI simples** (`scanner.py`) pra quem só quer a tabela, sem abrir
+  navegador.
+
+![Planejador de circuito](docs/screenshot.png)
 
 ## Sobre o EULA
 
@@ -140,11 +160,16 @@ passar pro próximo.
 - A rota "evitar low-sec" pode falhar se não existir caminho 100% hisec
   entre dois sistemas — nesse caso a ESI retorna erro, que aparece na
   caixa de rota da interface.
-- O planejador de circuito não recalcula rota/jumps entre as pernas —
-  ele assume que você vai viajar do hub A pro hub B, sem otimizar a
-  ordem de visita por distância. Se quiser, dá pra integrar com o
-  `/api/route` pra escolher automaticamente a ordem que minimiza jumps.
+- O modo manual do circuito não recalcula rota/jumps entre as pernas —
+  ele assume que você vai viajar do hub A pro hub B na ordem digitada.
+  Use o modo "otimizar automaticamente" se quiser considerar distância.
 - O budget é reaplicado igual em cada perna (não acumula o lucro da
   perna anterior automaticamente) — na prática seu ISK disponível cresce
   a cada volta, então o budget informado deveria ser atualizado conforme
   o circuito avança.
+
+## Licença
+
+MIT — veja [LICENSE](LICENSE). Uso por sua conta e risco: preços de
+mercado mudam a todo momento, e a responsabilidade por decisões de
+trade dentro do jogo é sempre sua.
