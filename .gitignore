@@ -10,6 +10,8 @@ venv/
 
 # Caches e estado local (gerados em runtime)
 volume_cache.json
+packaged_volume_cache.json
+*.tmp
 distance_cache.json
 system_cache.json
 gui_settings.json

@@ -23,6 +23,7 @@ from typing import Iterable
 import requests
 
 import config
+from jsoncache import JsonCache
 
 BASE_URL = "https://esi.evetech.net"
 
@@ -33,7 +34,8 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-SYSTEM_CACHE_FILE = os.path.join(os.path.dirname(__file__), "system_cache.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_system_cache = JsonCache(os.path.join(_HERE, "system_cache.json"))
 
 # Reaproveitar conexão TCP entre requisições — bem mais rápido que abrir
 # uma conexão nova a cada página, especialmente em regiões com muitas.
@@ -191,68 +193,47 @@ def resolve_type_names(type_ids: Iterable[int]) -> dict[int, str]:
     return names
 
 
-VOLUME_CACHE_FILE = os.path.join(os.path.dirname(__file__), "volume_cache.json")
+# packaged_volume: é o volume que conta no cargo (naves e containers são
+# vendidos empacotados; o "volume" montado deles é muito maior). Arquivo
+# novo porque o antigo (volume_cache.json) guardava o volume montado.
+_volume_cache = JsonCache(os.path.join(_HERE, "packaged_volume_cache.json"))
+
+
+def _fetch_type_volume(type_id: int) -> float:
+    data = _get(f"universe/types/{type_id}").json()
+    return float(data.get("packaged_volume") or data.get("volume") or 0.0)
 
 
 def get_type_volume(type_id: int) -> float:
-    """
-    Volume (m³) de uma unidade do item, usado pra caber no cargo hold.
-    Cacheado em disco porque volume de um item nunca muda.
-    """
-    if os.path.exists(VOLUME_CACHE_FILE):
-        with open(VOLUME_CACHE_FILE, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-    else:
-        cache = {}
-
+    """Volume empacotado (m³) de uma unidade. Cacheado: nunca muda."""
     key = str(type_id)
-    if key in cache:
-        return cache[key]
-
-    resp = _get(f"universe/types/{type_id}")
-    volume = float(resp.json().get("volume", 0.0))
-    cache[key] = volume
-
-    with open(VOLUME_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
-
-    return volume
+    if key not in _volume_cache:
+        _volume_cache.set(key, _fetch_type_volume(type_id))
+    return _volume_cache.get(key)
 
 
 def get_type_volumes(type_ids: Iterable[int]) -> dict[int, float]:
-    """Busca volume de vários itens (usa cache, só bate na ESI pros que faltam)."""
-    return {tid: get_type_volume(tid) for tid in type_ids}
+    """Volume de vários itens; busca na ESI só os que faltam e grava uma vez."""
+    ids = list(dict.fromkeys(int(t) for t in type_ids))
+    missing = {str(t): _fetch_type_volume(t) for t in ids if str(t) not in _volume_cache}
+    if missing:
+        _volume_cache.update(missing)
+    return {t: _volume_cache.get(str(t)) for t in ids}
 
 
 def resolve_system_id(system_name: str) -> int:
-    """
-    Resolve o nome de um sistema solar pro seu ID, com cache local em
-    system_cache.json (diferente de estações NPC, a ESI resolve nomes de
-    sistema de forma confiável via /universe/ids/).
-    """
-    if os.path.exists(SYSTEM_CACHE_FILE):
-        with open(SYSTEM_CACHE_FILE, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-    else:
-        cache = {}
-
+    """Nome do sistema solar → ID (cache em system_cache.json)."""
     key = system_name.strip()
-    if key in cache:
-        return cache[key]
+    hit = _system_cache.get(key.lower()) or _system_cache.get(key)
+    if hit:
+        return hit
 
-    resp = request("POST", "universe/ids", json_body=[key])
-    data = resp.json()
+    data = request("POST", "universe/ids", json_body=[key]).json()
     systems = data.get("systems", [])
-
     if not systems:
         raise ValueError(f"Sistema '{system_name}' não encontrado. Confira a grafia (em inglês).")
-
     system_id = systems[0]["id"]
-    cache[key] = system_id
-
-    with open(SYSTEM_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
-
+    _system_cache.set(key.lower(), system_id)
     return system_id
 
 
@@ -271,33 +252,18 @@ def get_route(origin_id: int, destination_id: int, avoid_lowsec: bool = True) ->
     return resp.json()["route"]
 
 
-DISTANCE_CACHE_FILE = os.path.join(os.path.dirname(__file__), "distance_cache.json")
+_distance_cache = JsonCache(os.path.join(_HERE, "distance_cache.json"))
 
 
 def get_jump_count(system_a: int, system_b: int, avoid_lowsec: bool = True) -> int:
     """
-    Número de jumps entre dois sistemas (distância é a mesma nos dois
-    sentidos, então cacheia por par ordenado). Usado pra pesar lucro vs
-    distância na otimização do circuito.
+    Número de jumps entre dois sistemas (simétrico → cacheia por par
+    ordenado). Usado pra pesar lucro vs distância no circuito.
     """
     if system_a == system_b:
         return 0
-
-    if os.path.exists(DISTANCE_CACHE_FILE):
-        with open(DISTANCE_CACHE_FILE, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-    else:
-        cache = {}
-
-    key = f"{min(system_a, system_b)}-{max(system_a, system_b)}-{avoid_lowsec}"
-    if key in cache:
-        return cache[key]
-
-    route = get_route(system_a, system_b, avoid_lowsec)
-    jumps = len(route) - 1
-    cache[key] = jumps
-
-    with open(DISTANCE_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
-
-    return jumps
+    pref = "safer" if avoid_lowsec else "shorter"   # v2: rotas da ESI nova
+    key = f"v2-{min(system_a, system_b)}-{max(system_a, system_b)}-{pref}"
+    if key not in _distance_cache:
+        _distance_cache.set(key, len(get_route(system_a, system_b, avoid_lowsec)) - 1)
+    return _distance_cache.get(key)
