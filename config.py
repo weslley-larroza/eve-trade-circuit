@@ -94,3 +94,11 @@ SSO_SCOPES = [
     "esi-skills.read_skills.v1",            # skills de jump drive (Fase 2)
     "esi-assets.read_assets.v1",            # estruturas onde há assets
 ]
+
+# --- Teste de acesso a estruturas -------------------------------------------
+ACCESS_TTL_OK = 6 * 3600          # acesso confirmado: revalida a cada 6h
+ACCESS_TTL_DENIED = 24 * 3600     # 403: não tenta de novo por 24h
+ACCESS_TTL_GONE = 7 * 24 * 3600   # 404: estrutura sumiu/destruída
+# Quantos erros (403/404) o teste pode gastar por janela do error limit da
+# ESI (100/min). Deixa folga pro resto do app.
+ACCESS_MAX_ERRORS_PER_WINDOW = 40

@@ -31,6 +31,11 @@ class JsonCache:
                 self._data = {}
         return self._data
 
+    @property
+    def lock(self) -> threading.RLock:
+        """Para ler-modificar-gravar uma chave sem corrida com outras threads."""
+        return self._lock
+
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:
             return self._ensure().get(key, default)
