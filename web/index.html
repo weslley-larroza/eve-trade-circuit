@@ -80,6 +80,25 @@
 
 <div class="panel">
   <div class="controls" id="charBar"><span class="hint" style="margin:0">Carregando personagens...</span></div>
+  <div id="ssoSetup" style="display:none;margin-top:12px;font-size:13px;line-height:1.7">
+    <div style="font-weight:600;margin-bottom:4px">Conectar com EVE Online</div>
+    <div>1. Em <a id="devLink" href="#" target="_blank" rel="noopener" style="color:var(--accent)">developers.eveonline.com</a>,
+      crie um app do tipo <b>Authentication &amp; API Access</b> com:</div>
+    <div style="margin-left:16px">
+      Callback URL: <code id="cbUrl"></code>
+      <button class="secondary" style="padding:1px 8px" onclick="copyText('cbUrl', this)">copiar</button><br>
+      Escopos (marque todos): <button class="secondary" style="padding:1px 8px" onclick="copyText('scopeList', this)">copiar lista</button>
+      <div id="scopeList" class="hint" style="margin:2px 0 0;font-family:monospace"></div>
+    </div>
+    <div>2. Cole aqui o <b>Client ID</b> do app:
+      <input type="text" id="clientIdInput" placeholder="32 caracteres" style="width:290px">
+      <button onclick="saveClientId()">Salvar</button>
+      <button class="secondary" id="cancelSetup" style="display:none" onclick="toggleSetup(false)">Cancelar</button>
+      <span id="setupMsg" class="warn"></span>
+    </div>
+    <div>3. Clique em <b>Entrar com EVE Online</b>. O app só pede escopos de leitura e não existe senha nem client secret:
+      o token fica no cofre do Windows.</div>
+  </div>
 </div>
 
 <div class="panel">
@@ -435,27 +454,71 @@ async function calcCircuit() {
   }
 }
 
+let ssoInfo = null;
+
+function fillSetup() {
+  if (!ssoInfo) return;
+  document.getElementById('devLink').href = ssoInfo.developers_url;
+  document.getElementById('cbUrl').textContent = ssoInfo.callback_url;
+  document.getElementById('scopeList').textContent = ssoInfo.scopes.join(' ');
+}
+
+function toggleSetup(show, cancellable = true) {
+  document.getElementById('ssoSetup').style.display = show ? 'block' : 'none';
+  document.getElementById('cancelSetup').style.display = show && cancellable ? 'inline-block' : 'none';
+  document.getElementById('setupMsg').textContent = '';
+}
+
+async function copyText(id, btn) {
+  const text = document.getElementById(id).textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'copiado!';
+  } catch (e) {
+    window.prompt('Copie:', text);   // navegador sem permissão de clipboard
+  }
+  setTimeout(() => { btn.textContent = id === 'cbUrl' ? 'copiar' : 'copiar lista'; }, 1500);
+}
+
+async function saveClientId() {
+  const input = document.getElementById('clientIdInput');
+  const { data } = await postJSON('/api/sso/client-id', { client_id: input.value.trim() });
+  if (data.error) { document.getElementById('setupMsg').textContent = data.error; return; }
+  input.value = '';
+  loadCharacters(data);
+}
+
 async function loadCharacters(data) {
   const bar = document.getElementById('charBar');
   try {
     data = data || await (await fetch('/api/characters')).json();
   } catch (e) { bar.innerHTML = '<span class="warn">Não deu pra carregar personagens.</span>'; return; }
 
+  ssoInfo = data.sso;
+  fillSetup();
+  const changeLink = data.sso.from_env ? '' :
+    '<a href="#" style="color:var(--muted);font-size:12px" onclick="toggleSetup(true);return false">' +
+    'trocar app EVE (' + esc(data.sso.client_id_hint) + ')</a>';
+
   if (!data.configured) {
-    bar.innerHTML = '<span class="hint" style="margin:0">Login EVE desativado: coloque o <b>client_id</b> do seu app em ' +
-      'local_settings.json (veja local_settings.example.json). Sem login, só as estações NPC são escaneadas.</span>';
+    bar.innerHTML = '<a href="/login"><button>Entrar com EVE Online</button></a>' +
+      '<span class="hint" style="margin:0">Falta o Client ID do app EVE (passo único, abaixo). ' +
+      'Sem login, só as estações NPC são escaneadas.</span>';
+    toggleSetup(true, false);
     return;
   }
+  toggleSetup(false);
+  if (new URLSearchParams(location.search).has('setup')) history.replaceState(null, '', '/');
   if (!data.characters.length) {
     bar.innerHTML = '<a href="/login"><button>Entrar com EVE Online</button></a>' +
-      '<span class="hint" style="margin:0">Login libera mercados de estruturas e standings.</span>';
+      '<span class="hint" style="margin:0">Login libera mercados de estruturas e standings.</span>' + changeLink;
     return;
   }
   const options = data.characters.map(c =>
     '<option value="' + esc(c.character_id) + '"' + (c.active ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('');
   bar.innerHTML = '<label>Personagem</label><select id="charSel">' + options + '</select>' +
     '<a href="/login"><button class="secondary">Adicionar personagem</button></a>' +
-    '<button class="secondary" id="logoutBtn">Sair deste personagem</button>';
+    '<button class="secondary" id="logoutBtn">Sair deste personagem</button>' + changeLink;
   document.getElementById('charSel').onchange = async (ev) => {
     const { data } = await postJSON('/api/characters/active', { character_id: parseInt(ev.target.value, 10) });
     loadCharacters(data);

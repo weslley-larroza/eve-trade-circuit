@@ -64,11 +64,19 @@ Sem login, o app funciona só com os hubs NPC. Para incluir estruturas:
      `esi-alliances.read_contacts.v1`, `esi-location.read_location.v1`,
      `esi-location.read_ship_type.v1`, `esi-skills.read_skills.v1`,
      `esi-assets.read_assets.v1`.
-2. Copie `local_settings.example.json` para `local_settings.json` e cole o
-   **Client ID** (com PKCE não existe client secret). Ou defina a variável
-   de ambiente `EVE_CLIENT_ID`.
-3. Rode `python webapp.py` e clique em **Entrar com EVE Online**. Dá pra
-   adicionar alts com **Adicionar personagem** e trocar o ativo na lista.
+2. Rode `python webapp.py`, abra a página e cole o **Client ID** no painel
+   "Conectar com EVE Online" (a página mostra a callback e os escopos pra
+   copiar). Ele fica salvo em `local_settings.json`. Com PKCE não existe
+   client secret.
+3. Clique em **Entrar com EVE Online**: o servidor redireciona direto pra
+   página de login da CCP, você escolhe o personagem e autoriza, e volta
+   logado. Dá pra adicionar alts com **Adicionar personagem** e trocar o
+   ativo na lista.
+
+Como o Client ID de um app PKCE não é segredo, o dono do projeto pode
+fixá-lo em `config.SSO_CLIENT_ID`: aí ninguém precisa do passo 1 nem do 2,
+é só clicar e logar. Ordem de prioridade: variável `EVE_CLIENT_ID` →
+`local_settings.json` → `config.SSO_CLIENT_ID`.
 
 O refresh token fica no **cofre do sistema** (Windows Credential Manager /
 Keychain / Secret Service, via `keyring`), nunca em arquivo. Em

@@ -259,6 +259,13 @@ def _page(title: str, body: str) -> str:
 
 @app.route("/login")
 def login():
+    """
+    Botão "Entrar com EVE Online": manda direto pra página de login da CCP
+    (PKCE). Sem client ID configurado, volta pra página com o painel de
+    configuração aberto.
+    """
+    if local_settings.client_id() is None:
+        return redirect("/?setup=1")
     try:
         return redirect(sso.begin_login())
     except sso.SSOError as exc:
@@ -288,7 +295,32 @@ def _character_id(data: dict) -> int:
 
 @app.route("/api/characters", methods=["GET"])
 def characters():
-    return jsonify({"configured": local_settings.client_id() is not None, "characters": sso.list_characters()})
+    cid = local_settings.client_id()
+    return jsonify({
+        "configured": cid is not None,
+        "characters": sso.list_characters(),
+        # Dados pra configurar o app EVE direto pela página.
+        "sso": {
+            "client_id_hint": f"{cid[:4]}…{cid[-4:]}" if cid else None,
+            "from_env": local_settings.client_id_from_env(),
+            "callback_url": config.SSO_CALLBACK_URL,
+            "scopes": config.SSO_SCOPES,
+            "developers_url": "https://developers.eveonline.com/applications",
+        },
+    })
+
+
+@app.route("/api/sso/client-id", methods=["POST"])
+def set_client_id():
+    """Salva o client ID do app EVE (colado na página) em local_settings.json."""
+    if local_settings.client_id_from_env():
+        raise BadInput("O client ID está vindo da variável de ambiente EVE_CLIENT_ID; altere-a lá.")
+    data = request.get_json(silent=True) or {}
+    try:
+        local_settings.save_client_id(str(data.get("client_id", "")))
+    except ValueError as exc:
+        raise BadInput(str(exc))
+    return characters()
 
 
 @app.route("/api/characters/active", methods=["POST"])
