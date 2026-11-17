@@ -55,12 +55,22 @@ def _ttl(entry: dict) -> int:
     }.get(entry.get("status"), 0)
 
 
-def is_fresh(entry: dict | None) -> bool:
-    return bool(entry) and time.time() - entry.get("checked_at", 0) < _ttl(entry)
+def is_fresh(entry: dict | None, region_ids: set[int] | None = None) -> bool:
+    if not entry or time.time() - entry.get("checked_at", 0) >= _ttl(entry):
+        return False
+    # Acesso ok mas mercado nunca testado (estava fora do escopo) e agora a
+    # região entrou no escopo → precisa testar o mercado.
+    if entry.get("status") == "ok" and entry.get("market") is None and region_ids is not None:
+        return entry.get("region_id") not in region_ids
+    return True
 
 
-def probe_one(structure_id: int, token: str) -> tuple[dict, int]:
-    """Testa uma estrutura. Retorna (entrada do cache, nº de erros gastos)."""
+def probe_one(structure_id: int, token: str, region_ids: set[int] | None = None) -> tuple[dict, int]:
+    """
+    Testa uma estrutura. Retorna (entrada do cache, nº de erros gastos).
+    Se region_ids for dado e a estrutura estiver fora dessas regiões, não
+    testa o mercado (market=None) — economiza chamada e erro.
+    """
     errors = 0
     entry: dict = {"checked_at": time.time()}
 
@@ -75,9 +85,13 @@ def probe_one(structure_id: int, token: str) -> tuple[dict, int]:
         "status": "ok",
         "name": info.get("name"),
         "system_id": info.get("solar_system_id"),
+        "region_id": esi_client.get_system_info(info["solar_system_id"])["region_id"],
         "owner_id": info.get("owner_id"),
         "type_id": info.get("type_id"),
+        "market": None,
     })
+    if region_ids is not None and entry["region_id"] not in region_ids:
+        return entry, errors
 
     m = esi_client.request(
         "GET", f"markets/structures/{structure_id}", params={"page": 1}, token=token, ok_statuses=(403, 404)
@@ -92,6 +106,7 @@ def probe(
     character_id: int,
     structure_ids: Iterable[int],
     token_getter: Callable[[], str],
+    region_ids: set[int] | None = None,
     force: bool = False,
     log: Callable[[str], None] = print,
     should_stop: Callable[[], bool] = lambda: False,
@@ -102,7 +117,8 @@ def probe(
     então pode ser interrompido sem perder o que já foi testado.
     """
     cache = load_cache(character_id)
-    todo = [int(s) for s in dict.fromkeys(structure_ids) if force or not is_fresh(cache.get(str(s)))]
+    todo = [int(s) for s in dict.fromkeys(structure_ids)
+            if force or not is_fresh(cache.get(str(s)), region_ids)]
     log(f"{len(todo)} estrutura(s) pra testar ({len(cache)} já no cache).")
 
     errors_in_window = 0
@@ -122,7 +138,7 @@ def probe(
             errors_in_window, window_started = 0, time.time()
 
         try:
-            entry, errs = probe_one(sid, token_getter())
+            entry, errs = probe_one(sid, token_getter(), region_ids)
         except esi_client.ESIError as exc:
             log(f"  {sid}: erro inesperado ({exc.status}), pulando.")
             errors_in_window += 1
@@ -131,7 +147,7 @@ def probe(
         errors_in_window += errs
         _save_entry(character_id, sid, entry)
 
-        if entry["status"] == "ok":
+        if entry["status"] == "ok" and entry["market"] is not None:
             log(f"  [{i}/{len(todo)}] {entry['name']} — acesso OK, mercado: {'sim' if entry['market'] else 'não'}")
         elif i % 10 == 0:
             log(f"  [{i}/{len(todo)}] testadas...")
@@ -139,6 +155,8 @@ def probe(
     return load_cache(character_id)
 
 
-def accessible_markets(character_id: int) -> dict[int, dict]:
+def accessible_markets(character_id: int, region_ids: set[int] | None = None) -> dict[int, dict]:
     """Estruturas com mercado acessível para o personagem (último teste)."""
-    return {int(k): v for k, v in load_cache(character_id).items() if v.get("status") == "ok" and v.get("market")}
+    return {int(k): v for k, v in load_cache(character_id).items()
+            if v.get("status") == "ok" and v.get("market")
+            and (region_ids is None or v.get("region_id") in region_ids)}

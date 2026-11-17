@@ -267,3 +267,33 @@ def get_jump_count(system_a: int, system_b: int, avoid_lowsec: bool = True) -> i
     if key not in _distance_cache:
         _distance_cache.set(key, len(get_route(system_a, system_b, avoid_lowsec)) - 1)
     return _distance_cache.get(key)
+
+
+_system_info_cache = JsonCache(os.path.join(_HERE, "system_info_cache.json"))
+
+
+def get_system_info(system_id: int) -> dict:
+    """Nome, segurança e região de um sistema (cache permanente)."""
+    key = str(system_id)
+    hit = _system_info_cache.get(key)
+    if hit:
+        return hit
+    sys_data = _get(f"universe/systems/{system_id}").json()
+    const = _get(f"universe/constellations/{sys_data['constellation_id']}").json()
+    hit = {
+        "name": sys_data["name"],
+        "security_status": sys_data.get("security_status"),
+        "constellation_id": sys_data["constellation_id"],
+        "region_id": const["region_id"],
+    }
+    _system_info_cache.set(key, hit)
+    return hit
+
+
+def resolve_region_ids(names: Iterable[str]) -> dict[str, int]:
+    """Nomes de região → IDs (os que não existirem ficam de fora)."""
+    names = [n.strip() for n in names if n.strip()]
+    if not names:
+        return {}
+    data = request("POST", "universe/ids", json_body=names).json()
+    return {r["name"]: r["id"] for r in data.get("regions", [])}

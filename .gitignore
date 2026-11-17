@@ -14,6 +14,7 @@ packaged_volume_cache.json
 *.tmp
 distance_cache.json
 system_cache.json
+system_info_cache.json
 gui_settings.json
 structure_access.json
 corp_cache.json

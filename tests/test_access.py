@@ -35,6 +35,7 @@ def fake_esi(tmp_path, monkeypatch):
 
     monkeypatch.setattr(esi_client, "request", request)
     monkeypatch.setattr(esi_client, "error_budget_remaining", lambda: 100)
+    monkeypatch.setattr(esi_client, "get_system_info", lambda sid: {"region_id": 10000002})
     return calls
 
 
@@ -74,3 +75,15 @@ def test_pauses_when_error_budget_is_spent(fake_esi, monkeypatch):
                         lambda m, p, **k: Resp(403))
     access.probe(1, denied, lambda: "tok", log=lambda m: None)
     assert len(waits) >= 2
+
+
+def test_out_of_scope_skips_market_until_region_enters_scope(fake_esi):
+    access.probe(1, [OK_ID], lambda: "tok", region_ids={10000043}, log=lambda m: None)
+    entry = access.load_cache(1)[str(OK_ID)]
+    assert entry["market"] is None and not any(p.startswith("markets/") for p in fake_esi)
+    assert access.accessible_markets(1) == {}
+
+    access.probe(1, [OK_ID], lambda: "tok", region_ids={10000002}, log=lambda m: None)
+    assert access.load_cache(1)[str(OK_ID)]["market"] is True
+    assert set(access.accessible_markets(1, {10000002})) == {OK_ID}
+    assert access.accessible_markets(1, {10000043}) == {}
