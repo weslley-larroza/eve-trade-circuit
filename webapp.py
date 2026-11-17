@@ -25,7 +25,9 @@ import local_settings
 import scanner
 from auth import sso
 from jsoncache import JsonCache
+from markets import sources
 from models import Location, default_tradable, npc_hubs
+from structures import access, discover, standings
 
 app = Flask(__name__, static_folder="web", static_url_path="")
 
@@ -137,12 +139,33 @@ def _apply_toggles(locations: list[Location]) -> list[Location]:
     return locations
 
 
-def scan_locations() -> list[Location]:
-    """Locais que entram no scan. Por enquanto: os hubs NPC de config.HUBS."""
-    return _apply_toggles(npc_hubs())
+def _structure_stage(src: sources.OrderBookSource, character_id: int, log) -> list[Location]:
+    """
+    Login ativo: escopo (região do personagem + extras) → descoberta →
+    teste de acesso → classificação. Devolve as estruturas utilizáveis.
+    """
+    regions = discover.scope_regions(character_id, log=log)
+    if not regions:
+        log("Sem região no escopo (localização indisponível e nenhuma região extra) — só hubs NPC.")
+        return []
+    log(f"Escopo de estruturas: {len(regions)} região(ões).")
+    src.fetch_regions(regions)
+
+    log("Descobrindo estruturas candidatas...")
+    region_orders = [o for rid in regions for o in src.region_orders.get(rid, [])]
+    candidates = discover.discover(character_id, region_orders=region_orders, log=log)
+
+    log("Testando acesso às estruturas...")
+    token = lambda: sso.get_access_token(character_id)  # noqa: E731
+    access.probe(character_id, candidates.keys(), token, region_ids=regions, log=log)
+
+    classifier = standings.Classifier(character_id)
+    locs = sources.structure_locations(character_id, regions, classifier.classify, candidates)
+    log(f"{len(locs)} estrutura(s) com mercado acessível no escopo.")
+    return locs
 
 
-# --- Scan ----------------------------------------------------------------------
+# --- Scan ---# --- Scan ----------------------------------------------------------------------
 def _resolve_names(rows: list[dict]) -> None:
     ids = {r["type_id"] for r in rows}
     names = esi_client.resolve_type_names(ids) if ids else {}
@@ -158,14 +181,31 @@ def _compute_opportunities(accounting_level: int) -> list[dict]:
     return opps
 
 
-def _run_scan(accounting_level: int) -> None:
+def _run_scan(accounting_level: int, include_structures: bool) -> None:
+    log = _state.add_log
     try:
-        locations = scan_locations()
-        books = scanner.build_books(locations, log=_state.add_log)
+        src = sources.OrderBookSource(log)
+        locations = npc_hubs()
+        character_id = sso.active_character_id()
+        token_getter = None
+
+        if include_structures and character_id:
+            try:
+                locations += _structure_stage(src, character_id, log)
+                token_getter = lambda: sso.get_access_token(character_id)  # noqa: E731
+            except sso.SSOError as exc:
+                log(f"Estruturas puladas: {exc}")
+
+        _apply_toggles(locations)
+
+        def on_denied(sid: int) -> None:
+            access.mark_denied(character_id, sid)
+
+        books = scanner.build_books(locations, log=log, source=src, token_getter=token_getter, on_denied=on_denied)
         with _state.lock:
             _state.books = books
-            _state.locations = {l.id: l for l in locations}
-        _state.add_log("Calculando oportunidades...")
+            _state.locations = {b.location.id: b.location for b in books}
+        log("Calculando oportunidades...")
         opps = _compute_opportunities(accounting_level)
         with _state.lock:
             _state.opportunities = opps
@@ -269,10 +309,12 @@ def get_settings():
 
 @app.route("/api/scan", methods=["POST"])
 def start_scan():
-    accounting_level = _accounting(request.get_json(silent=True) or {})
+    data = request.get_json(silent=True) or {}
+    accounting_level = _accounting(data)
+    include_structures = bool(data.get("include_structures", True))
     if not _state.try_start():
         return jsonify({"error": "Scan já em andamento."}), 409
-    threading.Thread(target=_run_scan, args=(accounting_level,), daemon=True).start()
+    threading.Thread(target=_run_scan, args=(accounting_level, include_structures), daemon=True).start()
     return jsonify({"started": True})
 
 

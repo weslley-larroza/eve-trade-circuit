@@ -65,11 +65,22 @@ def book_from_orders(location: Location, orders: list[dict]) -> LocationBook:
     return LocationBook(location=location, sell_orders=sell_orders, buy_orders=buy_orders)
 
 
-def build_books(locations: list[Location], log=print) -> list[LocationBook]:
-    """Baixa cada região uma vez e monta o livro de cada local."""
-    _, orders_by_loc = sources.collect(locations, log=log)
+def build_books(
+    locations: list[Location],
+    log=print,
+    source: "sources.OrderBookSource | None" = None,
+    token_getter=None,
+    on_denied=lambda sid: None,
+) -> list[LocationBook]:
+    """
+    Baixa cada região/estrutura uma vez e monta o livro de cada local.
+    Estruturas que negarem acesso na hora do download ficam de fora.
+    """
+    _, orders_by_loc, used = sources.collect(
+        locations, log=log, source=source, token_getter=token_getter, on_denied=on_denied
+    )
     books = []
-    for loc in locations:
+    for loc in used:
         book = book_from_orders(loc, orders_by_loc[loc.id])
         log(f"{loc.name}: {len(book.sell_orders)} itens à venda, {len(book.buy_orders)} com compra ativa.")
         books.append(book)

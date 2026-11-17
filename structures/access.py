@@ -47,6 +47,11 @@ def _save_entry(character_id: int, structure_id: int, entry: dict) -> None:
         _cache.set(str(character_id), data)
 
 
+def mark_denied(character_id: int, structure_id: int) -> None:
+    """A ESI negou o mercado agora (ACL mudou): registra como negada."""
+    _save_entry(character_id, structure_id, {"status": "denied", "checked_at": time.time()})
+
+
 def _ttl(entry: dict) -> int:
     return {
         "ok": config.ACCESS_TTL_OK,
