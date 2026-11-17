@@ -32,8 +32,35 @@ class OrderBookSource:
             self.log(f"Região {rid}: {len(self.region_orders[rid])} ordens.")
 
     def orders_for(self, loc: Location) -> list[Order]:
-        """Ordens localizadas no local (vendas e compras)."""
-        return [o for o in self.region_orders.get(loc.region_id, []) if o["location_id"] == loc.id]
+        """
+        Ordens utilizáveis a partir do local:
+          - vendas e compras localizadas nele;
+          - compras de outros locais cujo alcance cobre este (ver reaches()).
+        """
+        return [o for o in self.region_orders.get(loc.region_id, [])
+                if o["location_id"] == loc.id or (o["is_buy_order"] and reaches(o, loc))]
+
+
+def reaches(order: Order, loc: Location) -> bool:
+    """
+    Uma ordem de compra aceita venda feita em `loc`?
+
+      station      → só no próprio local da ordem
+      solarsystem  → qualquer local do mesmo sistema
+      region       → qualquer local da região
+      "1".."40"    → até N jumps. Sem o grafo do universo (Fase 2) só dá
+                     pra garantir o caso do mesmo sistema (0 jumps), então
+                     por enquanto conta só esse — conservador: pode perder
+                     oportunidade, nunca inventa uma.
+    """
+    if order["location_id"] == loc.id:
+        return True
+    rng = order.get("range", "station")
+    if rng == "region":
+        return True
+    if rng == "station":
+        return False
+    return order.get("system_id") == loc.system_id
 
 
 def collect(locations: list[Location], log: Log = print) -> tuple[OrderBookSource, dict[int, list[Order]]]:
