@@ -84,7 +84,7 @@ SSO_CALLBACK_URL = "http://127.0.0.1:5000/callback"
 # Client ID padrão do app (o do projeto). Com PKCE ele NÃO é segredo — pode
 # ficar versionado: quem rodar o app só clica em "Entrar com EVE Online".
 # local_settings.json → "client_id" ou a variável EVE_CLIENT_ID sobrescrevem.
-SSO_CLIENT_ID = ""
+SSO_CLIENT_ID = "1051d7874ada41baa0997147d39179a1"   # app "logistica marketing"
 SSO_SCOPES = [
     "esi-markets.structure_markets.v1",     # livro de ofertas de estruturas
     "esi-universe.read_structures.v1",      # nome/sistema/dono da estrutura
