@@ -2,10 +2,18 @@ import pytest
 
 import config
 import scanner
+from models import Location
+
+_ids = {}
 
 
-def book(name, sells=None, buys=None):
-    return scanner.HubBook(hub=name, station_id=0, sell_orders=sells or {}, buy_orders=buys or {})
+def loc(name, tradable=True):
+    lid = _ids.setdefault(name, 60000000 + len(_ids))
+    return Location(id=lid, name=name, region_id=1, system_id=lid, tradable=tradable)
+
+
+def book(name, sells=None, buys=None, tradable=True):
+    return scanner.LocationBook(location=loc(name, tradable), sell_orders=sells or {}, buy_orders=buys or {})
 
 
 def test_sales_tax_rate():
@@ -78,3 +86,24 @@ def test_walk_lots_min_volume_capped_by_remaining():
     # Ordem pede mínimo 50 mas só restam 10: vale vender as 10.
     lots = scanner.walk_lots([[100, 10]], [[300, 10, 50]], 0.0)
     assert sum(l["qty"] for l in lots) == 10
+
+
+def test_find_opportunities_ignores_untradable_locations():
+    a = book("A", sells={1: [[100, 10]]})
+    b = book("B", buys={1: [[1000, 10]]})
+    red = book("R", buys={1: [[5000, 10]]}, tradable=False)
+    opps = scanner.find_opportunities([a, b, red], 0.0)
+    assert {(o["buy_hub"], o["sell_hub"]) for o in opps} == {("A", "B")}
+    assert opps[0]["buy_location_id"] == a.key
+
+
+def test_book_from_orders_splits_and_sorts():
+    orders = [
+        {"type_id": 1, "is_buy_order": False, "price": 9, "volume_remain": 1, "location_id": 1},
+        {"type_id": 1, "is_buy_order": False, "price": 5, "volume_remain": 1, "location_id": 1},
+        {"type_id": 1, "is_buy_order": True, "price": 3, "volume_remain": 2, "min_volume": 1, "location_id": 1},
+        {"type_id": 1, "is_buy_order": True, "price": 4, "volume_remain": 2, "min_volume": 2, "location_id": 1},
+    ]
+    b = scanner.book_from_orders(loc("A"), orders)
+    assert b.sell_orders[1] == [[5, 1], [9, 1]]
+    assert b.buy_orders[1] == [[4, 2, 2], [3, 2, 1]]

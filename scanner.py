@@ -1,6 +1,6 @@
 """
-Escaneia os 5 grandes hubs hisec (Jita, Amarr, Dodixie, Rens, Hek) e lista as
-combinações mais lucrativas para COMPRA E VENDA INSTANTÂNEA (pegando ordens
+Escaneia uma lista de locais de mercado (por padrão os 5 hubs hisec: Jita,
+Amarr, Dodixie, Rens, Hek) e lista as combinações mais lucrativas para COMPRA E VENDA INSTANTÂNEA (pegando ordens
 existentes, sem criar as suas).
 
 Diferente de olhar só a melhor ordem, isso desce no livro de ofertas:
@@ -22,12 +22,13 @@ from dataclasses import dataclass, field
 
 import config
 import esi_client
+from markets import sources
+from models import Location, npc_hubs
 
 
 @dataclass
-class HubBook:
-    hub: str
-    station_id: int
+class LocationBook:
+    location: Location
     # type_id -> lista de [preço, volume_remain], ordens de venda em ordem
     # crescente de preço (a mais barata primeiro — é a que você compraria antes)
     sell_orders: dict[int, list[list[float]]] = field(default_factory=dict)
@@ -36,17 +37,20 @@ class HubBook:
     # venderia antes). min_volume = menor lote que a ordem aceita.
     buy_orders: dict[int, list[list[float]]] = field(default_factory=dict)
 
+    @property
+    def key(self) -> int:
+        return self.location.id
 
-def build_hub_book(hub: str, region_id: int, station_id: int) -> HubBook:
-    print(f"Baixando ordens de {hub} (region {region_id})...")
-    orders = esi_client.get_region_orders(region_id, order_type="all")
-    station_orders = [o for o in orders if o["location_id"] == station_id]
-    print(f"  {len(station_orders)} ordens na estação de {hub} (de {len(orders)} na região)")
+    @property
+    def name(self) -> str:
+        return self.location.name
 
+
+def book_from_orders(location: Location, orders: list[dict]) -> LocationBook:
     sell_orders: dict[int, list[list[float]]] = {}
     buy_orders: dict[int, list[list[float]]] = {}
 
-    for o in station_orders:
+    for o in orders:
         tid = o["type_id"]
         if o["is_buy_order"]:
             buy_orders.setdefault(tid, []).append([o["price"], o["volume_remain"], o.get("min_volume", 1)])
@@ -58,7 +62,18 @@ def build_hub_book(hub: str, region_id: int, station_id: int) -> HubBook:
     for lst in buy_orders.values():
         lst.sort(key=lambda e: e[0], reverse=True)  # mais generosa primeiro
 
-    return HubBook(hub=hub, station_id=station_id, sell_orders=sell_orders, buy_orders=buy_orders)
+    return LocationBook(location=location, sell_orders=sell_orders, buy_orders=buy_orders)
+
+
+def build_books(locations: list[Location], log=print) -> list[LocationBook]:
+    """Baixa cada região uma vez e monta o livro de cada local."""
+    _, orders_by_loc = sources.collect(locations, log=log)
+    books = []
+    for loc in locations:
+        book = book_from_orders(loc, orders_by_loc[loc.id])
+        log(f"{loc.name}: {len(book.sell_orders)} itens à venda, {len(book.buy_orders)} com compra ativa.")
+        books.append(book)
+    return books
 
 
 def _profitable_supply(sell: list[list[float]], i: int, buy_price: float, tax_rate: float, cap: float) -> float:
@@ -131,13 +146,15 @@ def walk_lots(sell_book: list[list[float]], buy_book: list[list[float]], tax_rat
     return lots
 
 
-def find_opportunities(books: list[HubBook], tax_rate: float) -> list[dict]:
+def find_opportunities(books: list[LocationBook], tax_rate: float) -> list[dict]:
+    """Melhores pares compra→venda entre locais marcados como tradable."""
     opportunities = []
+    tradable = [b for b in books if b.location.tradable]
 
-    for buy_hub in books:
-        for sell_hub in books:
-            if buy_hub.hub == sell_hub.hub:
-                continue  # arbitragem entre hubs diferentes (precisa haulear)
+    for buy_hub in tradable:
+        for sell_hub in tradable:
+            if buy_hub.key == sell_hub.key:
+                continue  # arbitragem entre locais diferentes (precisa haulear)
 
             for type_id, sell_book in buy_hub.sell_orders.items():
                 buy_book = sell_hub.buy_orders.get(type_id)
@@ -162,9 +179,11 @@ def find_opportunities(books: list[HubBook], tax_rate: float) -> list[dict]:
                 opportunities.append(
                     {
                         "type_id": type_id,
-                        "buy_hub": buy_hub.hub,
+                        "buy_location_id": buy_hub.key,
+                        "buy_hub": buy_hub.name,
                         "buy_price": total_cost / total_qty,       # preço médio pago
-                        "sell_hub": sell_hub.hub,
+                        "sell_location_id": sell_hub.key,
+                        "sell_hub": sell_hub.name,
                         "sell_price": lots[0]["sell_price"],       # melhor preço de venda (referência)
                         "profit_per_unit": total_profit / total_qty,
                         "margin_pct": margin_pct,
@@ -177,7 +196,7 @@ def find_opportunities(books: list[HubBook], tax_rate: float) -> list[dict]:
     return opportunities[: config.TOP_N_RESULTS]
 
 
-def leg_lots(buy_hub: HubBook, sell_hub: HubBook, tax_rate: float, top_k_items: int = 40) -> dict[int, list[dict]]:
+def leg_lots(buy_hub: LocationBook, sell_hub: LocationBook, tax_rate: float, top_k_items: int = 40) -> dict[int, list[dict]]:
     """
     Pra cada item com arbitragem lucrativa entre os dois hubs, retorna os
     lotes (preço/qty/lucro por unidade) obtidos descendo no livro. Limita
@@ -200,8 +219,8 @@ def leg_lots(buy_hub: HubBook, sell_hub: HubBook, tax_rate: float, top_k_items: 
 
 
 def plan_leg(
-    buy_hub: HubBook,
-    sell_hub: HubBook,
+    buy_hub: LocationBook,
+    sell_hub: LocationBook,
     tax_rate: float,
     cargo_m3: float,
     budget_isk: float,
@@ -288,8 +307,10 @@ def plan_leg(
     items.sort(key=lambda i: i["total_profit"], reverse=True)
 
     return {
-        "from": buy_hub.hub,
-        "to": sell_hub.hub,
+        "from_id": buy_hub.key,
+        "to_id": sell_hub.key,
+        "from": buy_hub.name,
+        "to": sell_hub.name,
         "items": items,
         "cargo_used": cargo_m3 - remaining_cargo,
         "cargo_total": cargo_m3,
@@ -300,16 +321,16 @@ def plan_leg(
 
 
 def all_pair_legs(
-    books: list[HubBook],
-    hubs: list[str],
+    books: list[LocationBook],
+    hubs: list[int],
     tax_rate: float,
     cargo_m3: float,
     budget_isk: float,
     volumes: dict[int, float],
     top_k_items: int = 40,
 ) -> dict[tuple[str, str], dict]:
-    """Calcula plan_leg pra TODOS os pares direcionados (a != b) dentro de hubs."""
-    book_by_hub = {b.hub: b for b in books}
+    """Calcula plan_leg pra TODOS os pares direcionados (a != b) dentro de hubs (ids)."""
+    book_by_hub = {b.key: b for b in books}
     legs = {}
     for a in hubs:
         for b in hubs:
@@ -322,21 +343,21 @@ def all_pair_legs(
 
 
 def best_circuit_order(
-    hubs: list[str],
-    leg_profit: dict[tuple[str, str], float],
-    jump_count: dict[tuple[str, str], int],
+    hubs: list,
+    leg_profit: dict[tuple, float],
+    jump_count: dict[tuple, int],
     jump_penalty_isk: float = 0.0,
-) -> tuple[list[str], float, int]:
+) -> tuple[list, float, int]:
     """
     Testa todas as ordens possíveis do loop (fixando o primeiro hub da
     lista como ponto de partida — não muda o resultado, é só rotação do
-    mesmo ciclo) e escolhe a que maximiza:
+    mesmo ciclo) e escolhe a que maximiza (hubs são ids de local):
 
         score = soma(lucro de cada perna) - jump_penalty_isk * soma(jumps)
 
     Com jump_penalty_isk = 0, isso vira puramente "ordena pelo mais
-    lucrativo". Só 5 hubs -> no máximo 4! = 24 combinações, então força
-    bruta é instantâneo.
+    lucrativo". Força bruta: (n-1)! ordens — o webapp limita n a
+    config.MAX_OPTIMIZE_LOCATIONS.
     """
     from itertools import permutations
 
@@ -369,8 +390,8 @@ def best_circuit_order(
 
 
 def plan_circuit(
-    books: list["HubBook"],
-    hub_order: list[str],
+    books: list[LocationBook],
+    hub_order: list[int],
     tax_rate: float,
     cargo_m3: float,
     budget_isk: float,
@@ -378,10 +399,10 @@ def plan_circuit(
     top_k_items: int = 40,
 ) -> list[dict]:
     """
-    hub_order define a sequência do loop (ex: ["Jita","Amarr","Dodixie",
-    "Rens","Hek"]) — o circuito volta pro primeiro no final automaticamente.
+    hub_order define a sequência do loop (ids de local) — o circuito volta
+    pro primeiro no final automaticamente.
     """
-    book_by_hub = {b.hub: b for b in books}
+    book_by_hub = {b.key: b for b in books}
     legs = []
 
     for i in range(len(hub_order)):
@@ -451,10 +472,7 @@ def main() -> None:
     tax_rate = config.sales_tax_rate(args.accounting)
     print(f"Sales tax considerado: {tax_rate*100:.3f}% (Accounting nível {args.accounting})")
 
-    books = []
-    for hub, cfg in config.HUBS.items():
-        book = build_hub_book(hub, cfg["region_id"], cfg["station_id"])
-        books.append(book)
+    books = build_books(npc_hubs())
 
     print("\nCalculando oportunidades de arbitragem (compra/venda instantânea)...")
     opportunities = find_opportunities(books, tax_rate)

@@ -61,3 +61,14 @@ APP_VERSION = "0.2.0"
 # Enviada em todo request (X-Compatibility-Date): congela o formato das
 # respostas. Só atualize depois de conferir o changelog da ESI.
 ESI_COMPATIBILITY_DATE = "2025-12-16"
+
+# --- Locais / estruturas -----------------------------------------------------
+# Política para estruturas RED (inimigas onde você ainda tem docking):
+#   "reference_only" → aparecem só como referência de preço; vêm desmarcadas
+#                      (não contam como origem/destino). Padrão.
+#   "pass_through"   → vêm marcadas, sempre com aviso de risco.
+# Em qualquer caso o usuário pode marcar/desmarcar cada local na interface.
+RED_STRUCTURE_POLICY = "reference_only"
+
+# O otimizador testa (n-1)! ordens; acima disso fica lento demais.
+MAX_OPTIMIZE_LOCATIONS = 8
