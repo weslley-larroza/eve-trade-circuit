@@ -31,8 +31,9 @@ class HubBook:
     # type_id -> lista de [preço, volume_remain], ordens de venda em ordem
     # crescente de preço (a mais barata primeiro — é a que você compraria antes)
     sell_orders: dict[int, list[list[float]]] = field(default_factory=dict)
-    # type_id -> lista de [preço, volume_remain], ordens de compra em ordem
-    # decrescente de preço (a mais generosa primeiro — é onde você venderia antes)
+    # type_id -> lista de [preço, volume_remain, min_volume], ordens de compra
+    # em ordem decrescente de preço (a mais generosa primeiro — é onde você
+    # venderia antes). min_volume = menor lote que a ordem aceita.
     buy_orders: dict[int, list[list[float]]] = field(default_factory=dict)
 
 
@@ -47,11 +48,10 @@ def build_hub_book(hub: str, region_id: int, station_id: int) -> HubBook:
 
     for o in station_orders:
         tid = o["type_id"]
-        entry = [o["price"], o["volume_remain"]]
         if o["is_buy_order"]:
-            buy_orders.setdefault(tid, []).append(entry)
+            buy_orders.setdefault(tid, []).append([o["price"], o["volume_remain"], o.get("min_volume", 1)])
         else:
-            sell_orders.setdefault(tid, []).append(entry)
+            sell_orders.setdefault(tid, []).append([o["price"], o["volume_remain"]])
 
     for lst in sell_orders.values():
         lst.sort(key=lambda e: e[0])              # mais barata primeiro
@@ -59,6 +59,16 @@ def build_hub_book(hub: str, region_id: int, station_id: int) -> HubBook:
         lst.sort(key=lambda e: e[0], reverse=True)  # mais generosa primeiro
 
     return HubBook(hub=hub, station_id=station_id, sell_orders=sell_orders, buy_orders=buy_orders)
+
+
+def _profitable_supply(sell: list[list[float]], i: int, buy_price: float, tax_rate: float, cap: float) -> float:
+    """Unidades à venda (a partir de i) que ainda dão lucro vendendo a buy_price."""
+    total = 0.0
+    for price, qty in (e[:2] for e in sell[i:]):
+        if buy_price * (1 - tax_rate) - price <= 0 or total >= cap:
+            break
+        total += qty
+    return min(total, cap)
 
 
 def walk_lots(sell_book: list[list[float]], buy_book: list[list[float]], tax_rate: float) -> list[dict]:
@@ -69,20 +79,32 @@ def walk_lots(sell_book: list[list[float]], buy_book: list[list[float]], tax_rat
     se desce no livro). Para de casar assim que o próximo par não é mais
     lucrativo — como um lado sobe de preço e o outro desce, o lucro só
     piora a partir daí, então parar cedo é seguro.
+
+    Ordens de compra com min_volume (3º campo) só são usadas se a oferta
+    lucrativa disponível alcança esse mínimo; senão a ordem é pulada (no
+    jogo, a venda seria recusada). Se a ordem tem menos unidades restantes
+    que o mínimo, vale o que resta.
     """
     sell = [list(e) for e in sell_book]  # cópia, porque vamos consumir
     buy = [list(e) for e in buy_book]
 
     i = j = 0
     lots = []
+    filled_j = 0  # unidades já vendidas na ordem de compra j
 
     while i < len(sell) and j < len(buy):
-        sell_price, sell_qty = sell[i]
-        buy_price, buy_qty = buy[j]
+        sell_price, sell_qty = sell[i][0], sell[i][1]
+        buy_price, buy_qty = buy[j][0], buy[j][1]
 
         unit_profit = buy_price * (1 - tax_rate) - sell_price
         if unit_profit <= 0:
             break
+
+        if filled_j == 0 and len(buy[j]) > 2:
+            min_vol = min(buy[j][2], buy_qty)
+            if min_vol > 1 and _profitable_supply(sell, i, buy_price, tax_rate, buy_qty) < min_vol:
+                j += 1
+                continue
 
         qty = int(min(sell_qty, buy_qty))
         if qty <= 0:
@@ -99,10 +121,12 @@ def walk_lots(sell_book: list[list[float]], buy_book: list[list[float]], tax_rat
 
         sell[i][1] -= qty
         buy[j][1] -= qty
+        filled_j += qty
         if sell[i][1] <= 0:
             i += 1
         if buy[j][1] <= 0:
             j += 1
+            filled_j = 0
 
     return lots
 

@@ -58,3 +58,23 @@ def test_best_circuit_order_prefers_profit_minus_jumps():
 def test_sales_tax_rate_rejects_invalid_accounting():
     with pytest.raises(ValueError):
         config.sales_tax_rate(10)       # daria taxa negativa e inflaria o lucro
+
+
+def test_walk_lots_skips_buy_order_when_min_volume_unreachable():
+    sell = [[100, 5]]
+    buy = [[300, 100, 50], [200, 100, 1]]   # a melhor exige lote de 50
+    lots = scanner.walk_lots(sell, buy, 0.0)
+    assert [(l["sell_price"], l["qty"]) for l in lots] == [(200, 5)]
+
+
+def test_walk_lots_uses_min_volume_order_when_supply_reaches_it():
+    sell = [[100, 30], [110, 30]]
+    buy = [[300, 100, 50]]
+    lots = scanner.walk_lots(sell, buy, 0.0)
+    assert sum(l["qty"] for l in lots) == 60
+
+
+def test_walk_lots_min_volume_capped_by_remaining():
+    # Ordem pede mínimo 50 mas só restam 10: vale vender as 10.
+    lots = scanner.walk_lots([[100, 10]], [[300, 10, 50]], 0.0)
+    assert sum(l["qty"] for l in lots) == 10
