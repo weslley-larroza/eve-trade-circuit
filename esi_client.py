@@ -1,21 +1,36 @@
 """
-Cliente simples para a ESI (EVE Swagger Interface) pública.
-Não usa nenhum endpoint autenticado — só dados de mercado e de universo,
-que são públicos.
+Cliente da ESI (EVE Swagger Interface).
+
+Endpoints públicos (mercado regional, universo, rotas) e, quando recebe um
+access token, autenticados (mercado de estruturas, contatos, assets...).
+
+Segue as regras atuais da ESI:
+  - sem /latest: a versão é escolhida pelo header X-Compatibility-Date;
+  - User-Agent identificável (app/versão + contato);
+  - rate limit por grupo (429 + Retry-After) e error limit (100 respostas
+    de erro por janela → 420 em tudo). O estado do error limit fica em
+    ERROR_LIMIT pra quem faz muitas chamadas que podem dar 403 (probe de
+    estruturas) decidir quando parar.
 """
 from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Iterable
 
 import requests
 
-BASE_URL = "https://esi.evetech.net/latest"
-# ESI pede um User-Agent identificável — não deixe genérico.
+import config
+
+BASE_URL = "https://esi.evetech.net"
+
+
 HEADERS = {
-    "User-Agent": "eve-market-scanner (uso pessoal, contato: <preencha seu email/discord>)"
+    "User-Agent": f"eve-trade-circuit/{config.APP_VERSION} (+https://github.com/weslley-larroza/eve-trade-circuit)",
+    "X-Compatibility-Date": config.ESI_COMPATIBILITY_DATE,
+    "Accept": "application/json",
 }
 
 SYSTEM_CACHE_FILE = os.path.join(os.path.dirname(__file__), "system_cache.json")
@@ -25,66 +40,154 @@ SYSTEM_CACHE_FILE = os.path.join(os.path.dirname(__file__), "system_cache.json")
 _session = requests.Session()
 _session.headers.update(HEADERS)
 
+# Último estado conhecido do error limit (atualizado a cada resposta).
+_err_lock = threading.Lock()
+ERROR_LIMIT = {"remain": 100, "reset_at": 0.0}
 
-def _get(url: str, params: dict | None = None) -> requests.Response:
-    """GET com respeito ao rate limit da ESI (erro 420 = error limited)."""
+
+class ESIError(RuntimeError):
+    def __init__(self, status: int, url: str, body: str = ""):
+        super().__init__(f"ESI {status} em {url}: {body[:200]}")
+        self.status = status
+
+
+def _track_limits(resp: requests.Response) -> None:
+    remain = resp.headers.get("X-ESI-Error-Limit-Remain")
+    reset = resp.headers.get("X-ESI-Error-Limit-Reset")
+    if remain is None:
+        return
+    with _err_lock:
+        ERROR_LIMIT["remain"] = int(remain)
+        ERROR_LIMIT["reset_at"] = time.time() + int(reset or 60)
+
+
+def error_budget_remaining() -> int:
+    """Erros que ainda cabem na janela atual (100 se a janela já virou)."""
+    with _err_lock:
+        if time.time() >= ERROR_LIMIT["reset_at"]:
+            return 100
+        return ERROR_LIMIT["remain"]
+
+
+def wait_error_window() -> None:
+    """Dorme até a janela do error limit virar."""
+    with _err_lock:
+        delay = ERROR_LIMIT["reset_at"] - time.time()
+    if delay > 0:
+        time.sleep(delay + 1)
+
+
+def request(
+    method: str,
+    path: str,
+    *,
+    params: dict | None = None,
+    json_body=None,
+    token: str | None = None,
+    ok_statuses: tuple[int, ...] = (),
+) -> requests.Response:
+    """
+    Request com retry de 420/429/5xx. `path` é relativo a BASE_URL ou URL
+    absoluta. Statuses em `ok_statuses` (ex.: 403, 404) voltam sem exceção
+    pra quem chamou interpretar.
+    """
+    url = path if path.startswith("http") else f"{BASE_URL}/{path.lstrip('/')}"
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+
     for attempt in range(5):
-        resp = _session.get(url, params=params, timeout=20)
+        resp = _session.request(method, url, params=params, json=json_body, headers=headers, timeout=30)
+        _track_limits(resp)
 
-        # A ESI também avisa PROATIVAMENTE quando você está perto do limite
-        # de erros (não precisa esperar tomar o 420 pra desacelerar).
-        remain = resp.headers.get("X-ESI-Error-Limit-Remain")
-        if remain is not None and int(remain) < 10:
-            reset = int(resp.headers.get("X-ESI-Error-Limit-Reset", "5"))
-            print(f"  [aviso] perto do limite de erros da ESI, pausando {reset}s...")
-            time.sleep(reset)
+        # Desacelera ANTES de tomar o 420.
+        if error_budget_remaining() < 10:
+            print("  [aviso] perto do error limit da ESI, pausando até a janela virar...")
+            wait_error_window()
 
-        if resp.status_code == 420:
+        if resp.status_code in (420, 429):
             wait = int(resp.headers.get("Retry-After", "5"))
-            print(f"  [rate limit] aguardando {wait}s...")
+            print(f"  [rate limit {resp.status_code}] aguardando {wait}s...")
             time.sleep(wait)
             continue
-        resp.raise_for_status()
-        return resp
+        if resp.status_code in (502, 503, 504) and attempt < 4:
+            time.sleep(2 ** attempt)
+            continue
+        if resp.status_code in ok_statuses or resp.ok:
+            return resp
+        raise ESIError(resp.status_code, url, resp.text)
     raise RuntimeError(f"Falhou após múltiplas tentativas: {url}")
+
+
+def _get(url: str, params: dict | None = None, token: str | None = None) -> requests.Response:
+    return request("GET", url, params=params, token=token)
+
+
+def get_paged(path: str, params: dict | None = None, token: str | None = None, label: str = "") -> list:
+    """
+    Baixa todas as páginas (header X-Pages) de um endpoint paginado.
+
+    Se o cache da ESI virar no meio do download (Last-Modified muda entre
+    páginas), as páginas seriam de snapshots diferentes — com ordens
+    duplicadas ou faltando. Nesse caso recomeça do zero (até 3 vezes).
+    """
+    for attempt in range(3):
+        items: list = []
+        page, total_pages = 1, 1
+        snapshot = None
+        start = time.time()
+        restarted = False
+        while page <= total_pages:
+            resp = _get(path, params={**(params or {}), "page": page}, token=token)
+            lm = resp.headers.get("Last-Modified")
+            if snapshot is None:
+                snapshot = lm
+            elif lm and lm != snapshot:
+                print(f"  {label or path}: dados mudaram no meio da paginação, recomeçando...")
+                restarted = True
+                break
+            items.extend(resp.json())
+            total_pages = int(resp.headers.get("X-Pages", "1"))
+            if label and (page == 1 or page % 5 == 0 or page == total_pages):
+                print(f"  {label}: página {page}/{total_pages} — {len(items)} itens ({time.time() - start:.0f}s)")
+            page += 1
+        if not restarted:
+            return items
+    return items
 
 
 def get_region_orders(region_id: int, order_type: str = "all") -> list[dict]:
     """Baixa TODAS as páginas de ordens de uma região (todas as estações nela)."""
-    orders: list[dict] = []
-    page = 1
-    total_pages = 1
-    start = time.time()
+    return get_paged(f"markets/{region_id}/orders", params={"order_type": order_type}, label=f"região {region_id}")
 
-    while page <= total_pages:
-        resp = _get(
-            f"{BASE_URL}/markets/{region_id}/orders/",
-            params={"order_type": order_type, "page": page},
-        )
-        orders.extend(resp.json())
-        total_pages = int(resp.headers.get("X-Pages", "1"))
 
-        if page == 1 or page % 5 == 0 or page == total_pages:
-            elapsed = time.time() - start
-            print(f"  página {page}/{total_pages} — {len(orders)} ordens até agora ({elapsed:.0f}s)")
-
-        page += 1
-
-    return orders
+def get_structure_orders(structure_id: int, token: str) -> list[dict]:
+    """Livro de ofertas de uma estrutura (exige docking + structure_markets)."""
+    return get_paged(f"markets/structures/{structure_id}", token=token, label=f"estrutura {structure_id}")
 
 
 def resolve_type_names(type_ids: Iterable[int]) -> dict[int, str]:
-    """Resolve type_id -> nome do item, em lotes de até 1000 (limite da ESI)."""
-    ids = list(dict.fromkeys(type_ids))  # dedup preservando ordem
+    """
+    Resolve IDs -> nome (itens, sistemas, corps...) via /universe/names, em
+    lotes de até 1000. Um único ID inválido faz a ESI responder 404 pro lote
+    inteiro; nesse caso o lote é dividido ao meio até isolar o culpado.
+    """
+    ids = list(dict.fromkeys(int(i) for i in type_ids))
     names: dict[int, str] = {}
 
-    for i in range(0, len(ids), 1000):
-        batch = ids[i : i + 1000]
-        resp = _session.post(f"{BASE_URL}/universe/names/", json=batch, timeout=20)
-        resp.raise_for_status()
+    def resolve(batch: list[int]) -> None:
+        if not batch:
+            return
+        resp = request("POST", "universe/names", json_body=batch, ok_statuses=(404,))
+        if resp.status_code == 404:
+            if len(batch) > 1:
+                mid = len(batch) // 2
+                resolve(batch[:mid])
+                resolve(batch[mid:])
+            return
         for entry in resp.json():
             names[entry["id"]] = entry["name"]
 
+    for i in range(0, len(ids), 1000):
+        resolve(ids[i : i + 1000])
     return names
 
 
@@ -106,7 +209,7 @@ def get_type_volume(type_id: int) -> float:
     if key in cache:
         return cache[key]
 
-    resp = _get(f"{BASE_URL}/universe/types/{type_id}/")
+    resp = _get(f"universe/types/{type_id}")
     volume = float(resp.json().get("volume", 0.0))
     cache[key] = volume
 
@@ -137,8 +240,7 @@ def resolve_system_id(system_name: str) -> int:
     if key in cache:
         return cache[key]
 
-    resp = _session.post(f"{BASE_URL}/universe/ids/", json=[key], timeout=20)
-    resp.raise_for_status()
+    resp = request("POST", "universe/ids", json_body=[key])
     data = resp.json()
     systems = data.get("systems", [])
 
@@ -156,16 +258,17 @@ def resolve_system_id(system_name: str) -> int:
 
 def get_route(origin_id: int, destination_id: int, avoid_lowsec: bool = True) -> list[int]:
     """
-    Retorna a lista de system_id da rota, na ordem (incluindo origem e
-    destino). flag='secure' evita low-sec/null-sec quando possível;
-    'shortest' ignora segurança e pega o caminho mais curto.
+    Lista de system_id da rota, na ordem (incluindo origem e destino).
+
+    avoid_lowsec=True usa preference "Safer" (prefere hisec, mas ainda passa
+    por low/null se não existir caminho só hisec); False usa "Shorter".
     """
-    flag = "secure" if avoid_lowsec else "shortest"
-    resp = _get(
-        f"{BASE_URL}/route/{origin_id}/{destination_id}/",
-        params={"flag": flag},
+    resp = request(
+        "POST",
+        f"route/{origin_id}/{destination_id}",
+        json_body={"preference": "Safer" if avoid_lowsec else "Shorter"},
     )
-    return resp.json()
+    return resp.json()["route"]
 
 
 DISTANCE_CACHE_FILE = os.path.join(os.path.dirname(__file__), "distance_cache.json")

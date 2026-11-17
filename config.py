@@ -55,3 +55,9 @@ def sales_tax_rate(accounting_level: int = ACCOUNTING_SKILL_LEVEL) -> float:
 MIN_TOTAL_PROFIT = 1000          # ISK — lucro total mínimo do achado (todas as unidades)
 MIN_MARGIN_PCT = 8.0             # % líquido mínimo pra listar
 TOP_N_RESULTS = 30
+
+# --- ESI ------------------------------------------------------------------
+APP_VERSION = "0.2.0"
+# Enviada em todo request (X-Compatibility-Date): congela o formato das
+# respostas. Só atualize depois de conferir o changelog da ESI.
+ESI_COMPATIBILITY_DATE = "2025-12-16"
