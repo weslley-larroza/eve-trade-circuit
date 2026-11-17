@@ -47,9 +47,11 @@ SALES_TAX_BASE = 0.075
 SALES_TAX_REDUCTION_PER_LEVEL = 0.11
 
 def sales_tax_rate(accounting_level: int = ACCOUNTING_SKILL_LEVEL) -> float:
+    if not 0 <= int(accounting_level) <= 5:
+        raise ValueError(f"Nível de Accounting deve ser 0–5 (recebido: {accounting_level}).")
     return SALES_TAX_BASE * (1 - SALES_TAX_REDUCTION_PER_LEVEL * accounting_level)
 
 # --- Filtros do scan -------------------------------------------------------
-MIN_PROFIT_PER_UNIT = 1000       # ISK — ignora achados de margem irrisória
+MIN_TOTAL_PROFIT = 1000          # ISK — lucro total mínimo do achado (todas as unidades)
 MIN_MARGIN_PCT = 8.0             # % líquido mínimo pra listar
 TOP_N_RESULTS = 30

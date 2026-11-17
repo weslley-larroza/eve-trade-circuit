@@ -128,7 +128,7 @@ def find_opportunities(books: list[HubBook], tax_rate: float) -> list[dict]:
                 total_cost = sum(l["qty"] * l["buy_price"] for l in lots)
                 total_profit = sum(l["qty"] * l["unit_profit"] for l in lots)
 
-                if total_profit < config.MIN_PROFIT_PER_UNIT:
+                if total_profit < config.MIN_TOTAL_PROFIT:
                     continue
 
                 margin_pct = (total_profit / total_cost) * 100 if total_cost > 0 else 0
@@ -374,7 +374,7 @@ def plan_circuit(
 def print_report(opportunities: list[dict], names: dict[int, str]) -> None:
     if not opportunities:
         print("\nNenhuma oportunidade encontrada com os filtros atuais "
-              "(MIN_PROFIT_PER_UNIT / MIN_MARGIN_PCT em config.py).")
+              "(MIN_TOTAL_PROFIT / MIN_MARGIN_PCT em config.py).")
         return
 
     header = (

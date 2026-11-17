@@ -53,3 +53,8 @@ def test_best_circuit_order_prefers_profit_minus_jumps():
     jumps = {("A", "B"): 1, ("B", "C"): 1, ("A", "C"): 1}
     order, total, _ = scanner.best_circuit_order(hubs, profit, jumps)
     assert order == ["A", "C", "B"] and total == 100
+
+
+def test_sales_tax_rate_rejects_invalid_accounting():
+    with pytest.raises(ValueError):
+        config.sales_tax_rate(10)       # daria taxa negativa e inflaria o lucro

@@ -10,6 +10,7 @@ Uso:
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 
@@ -88,6 +89,33 @@ def _run_scan(accounting_level: int) -> None:
             _scan_state["error"] = str(exc)
 
 
+# --- Validação de entrada ----------------------------------------------------
+class BadInput(ValueError):
+    pass
+
+
+def _num(data: dict, key: str, default, lo: float | None = None, hi: float | None = None, as_int: bool = False):
+    raw = data.get(key, default)
+    try:
+        val = int(raw) if as_int else float(raw)
+    except (TypeError, ValueError):
+        raise BadInput(f"'{key}' precisa ser um número (recebido: {raw!r}).")
+    if isinstance(val, float) and not math.isfinite(val):
+        raise BadInput(f"'{key}' precisa ser um número finito.")
+    if (lo is not None and val < lo) or (hi is not None and val > hi):
+        raise BadInput(f"'{key}' fora do intervalo permitido ({lo}–{hi}).")
+    return val
+
+
+def _accounting(data: dict) -> int:
+    return _num(data, "accounting", config.ACCOUNTING_SKILL_LEVEL, 0, 5, as_int=True)
+
+
+@app.errorhandler(BadInput)
+def _bad_input(exc):
+    return jsonify({"error": str(exc)}), 400
+
+
 # --- Rotas HTTP -------------------------------------------------------------
 @app.route("/")
 def index():
@@ -105,7 +133,7 @@ def start_scan():
         if _scan_state["status"] == "running":
             return jsonify({"error": "Scan já em andamento."}), 409
 
-    accounting_level = int((request.json or {}).get("accounting", config.ACCOUNTING_SKILL_LEVEL))
+    accounting_level = _accounting(request.get_json(silent=True) or {})
     threading.Thread(target=_run_scan, args=(accounting_level,), daemon=True).start()
     return jsonify({"started": True})
 
@@ -118,7 +146,7 @@ def scan_status():
 
 @app.route("/api/route", methods=["POST"])
 def calc_route():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     origin_name = (data.get("origin") or "").strip()
     buy_hub = data.get("buy_hub")
     sell_hub = data.get("sell_hub")
@@ -153,11 +181,11 @@ def calc_route():
 
 @app.route("/api/circuit", methods=["POST"])
 def calc_circuit():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     hub_order = data.get("hub_order") or list(config.HUBS.keys())
-    cargo_m3 = float(data.get("cargo_m3", 0))
-    budget_isk = float(data.get("budget_isk", 0))
-    accounting_level = int(data.get("accounting", config.ACCOUNTING_SKILL_LEVEL))
+    cargo_m3 = _num(data, "cargo_m3", 0, 0)
+    budget_isk = _num(data, "budget_isk", 0, 0)
+    accounting_level = _accounting(data)
 
     if not _books:
         return jsonify({"error": "Rode um scan primeiro (botão 'Escanear mercado')."}), 400
@@ -204,12 +232,12 @@ def _resolve_names_for_legs(legs: list[dict]) -> None:
 
 @app.route("/api/circuit/optimize", methods=["POST"])
 def optimize_circuit():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     hubs = data.get("hubs") or list(config.HUBS.keys())
-    cargo_m3 = float(data.get("cargo_m3", 0))
-    budget_isk = float(data.get("budget_isk", 0))
-    accounting_level = int(data.get("accounting", config.ACCOUNTING_SKILL_LEVEL))
-    jump_penalty_isk = float(data.get("jump_penalty_isk", 0))
+    cargo_m3 = _num(data, "cargo_m3", 0, 0)
+    budget_isk = _num(data, "budget_isk", 0, 0)
+    accounting_level = _accounting(data)
+    jump_penalty_isk = _num(data, "jump_penalty_isk", 0, 0)
     avoid_lowsec = bool(data.get("avoid_lowsec", True))
 
     if not _books:
