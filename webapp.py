@@ -16,15 +16,30 @@ import math
 import os
 import threading
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, redirect, request, send_from_directory
+from markupsafe import escape
 
 import config
 import esi_client
+import local_settings
 import scanner
+from auth import sso
 from jsoncache import JsonCache
 from models import Location, default_tradable, npc_hubs
 
 app = Flask(__name__, static_folder="web", static_url_path="")
+
+# Só atende quem chama pelo próprio endereço local. Bloqueia DNS rebinding:
+# um site malicioso apontando um domínio pra 127.0.0.1 não consegue usar
+# este servidor (que agora fala com a ESI usando o seu token).
+ALLOWED_HOSTS = {"127.0.0.1:5000", "localhost:5000", "localhost"}
+
+
+@app.before_request
+def _check_host():
+    if request.host not in ALLOWED_HOSTS:
+        abort(403)
+
 
 _settings = JsonCache(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json"))
 
@@ -188,6 +203,59 @@ def _check_tradable(ids: list[int]) -> None:
 @app.route("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
+
+
+# --- Login EVE SSO --------------------------------------------------------------
+def _page(title: str, body: str) -> str:
+    return (f"<!doctype html><meta charset='utf-8'><title>{escape(title)}</title>"
+            f"<body style='background:#0f1115;color:#e6e8ec;font-family:Segoe UI,Arial;padding:30px'>"
+            f"<h2>{escape(title)}</h2><p>{escape(body)}</p><p><a style='color:#4da3ff' href='/'>Voltar</a></p>")
+
+
+@app.route("/login")
+def login():
+    try:
+        return redirect(sso.begin_login())
+    except sso.SSOError as exc:
+        return _page("Login indisponível", str(exc)), 400
+
+
+@app.route("/callback")
+def sso_callback():
+    if request.args.get("error"):
+        return _page("Login cancelado", request.args.get("error_description") or request.args["error"]), 400
+    code, state = request.args.get("code"), request.args.get("state")
+    if not code or not state:
+        return _page("Login inválido", "Faltou code/state na resposta do EVE SSO."), 400
+    try:
+        sso.complete_login(code, state)
+    except Exception as exc:  # noqa: BLE001
+        return _page("Falha no login", str(exc)), 400
+    return redirect("/")
+
+
+def _character_id(data: dict) -> int:
+    cid = _num(data, "character_id", None, 1, as_int=True)
+    if not any(c["character_id"] == cid for c in sso.list_characters()):
+        raise BadInput("Personagem não está logado.")
+    return cid
+
+
+@app.route("/api/characters", methods=["GET"])
+def characters():
+    return jsonify({"configured": local_settings.client_id() is not None, "characters": sso.list_characters()})
+
+
+@app.route("/api/characters/active", methods=["POST"])
+def set_active_character():
+    sso.set_active(_character_id(request.get_json(silent=True) or {}))
+    return characters()
+
+
+@app.route("/api/characters/logout", methods=["POST"])
+def logout_character():
+    sso.logout(_character_id(request.get_json(silent=True) or {}))
+    return characters()
 
 
 @app.route("/api/settings", methods=["GET"])

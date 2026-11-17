@@ -72,3 +72,25 @@ RED_STRUCTURE_POLICY = "reference_only"
 
 # O otimizador testa (n-1)! ordens; acima disso fica lento demais.
 MAX_OPTIMIZE_LOCATIONS = 8
+
+# --- SSO (EVE Online OAuth2 + PKCE) ----------------------------------------
+# Registre o app em https://developers.eveonline.com com:
+#   callback: http://127.0.0.1:5000/callback
+#   escopos:  TODOS os de SSO_SCOPES abaixo (o login falha se pedir um
+#             escopo que não foi registrado no app)
+# e coloque o client ID em local_settings.json → "client_id" (ou na variável
+# de ambiente EVE_CLIENT_ID). Com PKCE não existe client secret.
+SSO_CALLBACK_URL = "http://127.0.0.1:5000/callback"
+SSO_SCOPES = [
+    "esi-markets.structure_markets.v1",     # livro de ofertas de estruturas
+    "esi-universe.read_structures.v1",      # nome/sistema/dono da estrutura
+    "esi-search.search_structures.v1",      # descoberta por busca
+    "esi-corporations.read_structures.v1",  # estruturas da corp (cargo Station Manager)
+    "esi-characters.read_contacts.v1",      # standings pessoais
+    "esi-corporations.read_contacts.v1",    # standings da corp
+    "esi-alliances.read_contacts.v1",       # standings da aliança
+    "esi-location.read_location.v1",        # sistema/região onde o personagem está
+    "esi-location.read_ship_type.v1",       # nave atual (alcance de jump freighter, Fase 2)
+    "esi-skills.read_skills.v1",            # skills de jump drive (Fase 2)
+    "esi-assets.read_assets.v1",            # estruturas onde há assets
+]

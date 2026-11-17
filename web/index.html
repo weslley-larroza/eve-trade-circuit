@@ -35,7 +35,7 @@
 
   .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   label { font-size: 13px; color: var(--muted); }
-  input[type=text], input[type=number] {
+  input[type=text], input[type=number], select {
     background: #0c0e12; border: 1px solid var(--border); color: var(--text);
     border-radius: 4px; padding: 6px 8px; font-size: 13px;
   }
@@ -77,6 +77,10 @@
 
 <h1>EVE Market Scanner</h1>
 <div class="sub">Arbitragem instantânea entre locais de mercado — dados da ESI.</div>
+
+<div class="panel">
+  <div class="controls" id="charBar"><span class="hint" style="margin:0">Carregando personagens...</span></div>
+</div>
 
 <div class="panel">
   <div class="controls">
@@ -420,7 +424,40 @@ async function calcCircuit() {
   }
 }
 
+async function loadCharacters(data) {
+  const bar = document.getElementById('charBar');
+  try {
+    data = data || await (await fetch('/api/characters')).json();
+  } catch (e) { bar.innerHTML = '<span class="warn">Não deu pra carregar personagens.</span>'; return; }
+
+  if (!data.configured) {
+    bar.innerHTML = '<span class="hint" style="margin:0">Login EVE desativado: coloque o <b>client_id</b> do seu app em ' +
+      'local_settings.json (veja local_settings.example.json). Sem login, só as estações NPC são escaneadas.</span>';
+    return;
+  }
+  if (!data.characters.length) {
+    bar.innerHTML = '<a href="/login"><button>Entrar com EVE Online</button></a>' +
+      '<span class="hint" style="margin:0">Login libera mercados de estruturas e standings.</span>';
+    return;
+  }
+  const options = data.characters.map(c =>
+    '<option value="' + esc(c.character_id) + '"' + (c.active ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('');
+  bar.innerHTML = '<label>Personagem</label><select id="charSel">' + options + '</select>' +
+    '<a href="/login"><button class="secondary">Adicionar personagem</button></a>' +
+    '<button class="secondary" id="logoutBtn">Sair deste personagem</button>';
+  document.getElementById('charSel').onchange = async (ev) => {
+    const { data } = await postJSON('/api/characters/active', { character_id: parseInt(ev.target.value, 10) });
+    loadCharacters(data);
+  };
+  document.getElementById('logoutBtn').onclick = async () => {
+    const id = parseInt(document.getElementById('charSel').value, 10);
+    const { data } = await postJSON('/api/characters/logout', { character_id: id });
+    loadCharacters(data);
+  };
+}
+
 loadSettings();
+loadCharacters();
 </script>
 </body>
 </html>
