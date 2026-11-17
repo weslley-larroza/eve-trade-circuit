@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Caches e estado local (gerados em runtime)
+volume_cache.json
+packaged_volume_cache.json
+*.tmp
+distance_cache.json
+system_cache.json
+system_info_cache.json
+gui_settings.json
+structure_access.json
+corp_cache.json
+contacts_cache.json
+auth_state.json
+
+# Configuração local / segredos (o refresh token fica no cofre do sistema, não em disco)
+local_settings.json
+*.token
+.env

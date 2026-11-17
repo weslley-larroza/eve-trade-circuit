@@ -1,2 +1,4 @@
 requests>=2.31
 flask>=3.0
+keyring>=25
+PyJWT[crypto]>=2.8

@@ -35,7 +35,7 @@
 
   .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   label { font-size: 13px; color: var(--muted); }
-  input[type=text], input[type=number] {
+  input[type=text], input[type=number], select {
     background: #0c0e12; border: 1px solid var(--border); color: var(--text);
     border-radius: 4px; padding: 6px 8px; font-size: 13px;
   }
@@ -61,20 +61,70 @@
   #routeResult { white-space: pre-wrap; font-size: 13px; margin-top: 10px; line-height: 1.6; }
   #selectedInfo { font-size: 13px; color: var(--muted); margin-top: 6px; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; background: #2a2f3a; }
+  .badge.corp, .badge.alliance { background: #1d3b2a; color: var(--good); }
+  .badge.blue { background: #1b2f4a; color: var(--accent); }
+  .badge.neutral { background: #3a3220; color: var(--warn); }
+  .badge.red { background: #4a1f22; color: #ff6b6b; }
+  .warn { color: var(--warn); font-size: 12px; }
+  #locTable td, #locTable th { text-align: left; }
+  tr.off td { opacity: 0.5; }
+  .circ-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; }
+  .circ-row button { padding: 1px 7px; }
 </style>
 </head>
 <body>
 
 <h1>EVE Market Scanner</h1>
-<div class="sub">Arbitragem instantânea entre Jita, Amarr, Dodixie, Rens e Hek — dados públicos via ESI.</div>
+<div class="sub">Arbitragem instantânea entre locais de mercado — dados da ESI.</div>
+
+<div class="panel">
+  <div class="controls" id="charBar"><span class="hint" style="margin:0">Carregando personagens...</span></div>
+  <div id="ssoSetup" style="display:none;margin-top:12px;font-size:13px;line-height:1.7">
+    <div style="font-weight:600;margin-bottom:4px">Conectar com EVE Online</div>
+    <div>1. Em <a id="devLink" href="#" target="_blank" rel="noopener" style="color:var(--accent)">developers.eveonline.com</a>,
+      crie um app do tipo <b>Authentication &amp; API Access</b> com:</div>
+    <div style="margin-left:16px">
+      Callback URL: <code id="cbUrl"></code>
+      <button class="secondary" style="padding:1px 8px" onclick="copyText('cbUrl', this)">copiar</button><br>
+      Escopos (marque todos): <button class="secondary" style="padding:1px 8px" onclick="copyText('scopeList', this)">copiar lista</button>
+      <div id="scopeList" class="hint" style="margin:2px 0 0;font-family:monospace"></div>
+    </div>
+    <div>2. Cole aqui o <b>Client ID</b> do app:
+      <input type="text" id="clientIdInput" placeholder="32 caracteres" style="width:290px">
+      <button onclick="saveClientId()">Salvar</button>
+      <button class="secondary" id="cancelSetup" style="display:none" onclick="toggleSetup(false)">Cancelar</button>
+      <span id="setupMsg" class="warn"></span>
+    </div>
+    <div>3. Clique em <b>Entrar com EVE Online</b>. O app só pede escopos de leitura e não existe senha nem client secret:
+      o token fica no cofre do Windows.</div>
+  </div>
+</div>
 
 <div class="panel">
   <div class="controls">
     <label>Nível Accounting</label>
     <input type="number" id="accounting" value="0" min="0" max="5" style="width:50px">
+    <label><input type="checkbox" id="includeStructures" checked> Incluir estruturas (requer login)</label>
     <button id="scanBtn" onclick="startScan()">Escanear mercado</button>
     <span id="status">Pronto.</span>
   </div>
+  <div class="controls" style="margin-top:8px">
+    <label>Escopo de estruturas: região onde o personagem está +</label>
+    <span id="regionList"></span>
+    <input type="text" id="regionInput" placeholder="ex.: Domain" style="width:140px">
+    <button class="secondary" onclick="addRegion()">Adicionar região</button>
+  </div>
+  <div class="hint">Raio em jumps e alcance de jump freighter chegam na próxima fase (precisa do mapa do universo).</div>
+</div>
+
+<div class="panel">
+  <h2 style="font-size:15px;margin:0 0 10px;">Locais</h2>
+  <table id="locTable">
+    <thead><tr><th>Contabilizar</th><th>Local</th><th>Tipo</th><th>Aviso</th></tr></thead>
+    <tbody id="locBody"><tr><td colspan="4" style="color:var(--muted)">Rode um scan para listar os locais.</td></tr></tbody>
+  </table>
+  <div class="hint">Desmarcado = o local continua no scan como referência de preço, mas não entra como origem/destino de trade nem no circuito.</div>
 </div>
 
 <div class="panel">
@@ -107,9 +157,8 @@
 
 <div class="panel">
   <h2 style="font-size:15px;margin:0 0 10px;">Circuito de trade (loop contínuo)</h2>
-  <div class="controls">
-    <label id="hubOrderLabel">Ordem dos hubs</label>
-    <input type="text" id="hubOrder" value="Jita,Amarr,Dodixie,Rens,Hek" style="width:260px">
+  <div id="circuitList"><div class="hint">Rode um scan para escolher os locais do circuito.</div></div>
+  <div class="controls" style="margin-top:8px">
     <label>Cargo (m³)</label>
     <input type="number" id="cargoM3" value="5000" style="width:90px">
     <label>Budget (ISK)</label>
@@ -121,66 +170,123 @@
     <input type="number" id="jumpPenalty" value="0" style="width:110px" disabled>
     <button id="circuitBtn" onclick="calcCircuit()">Calcular circuito</button>
   </div>
-  <div class="hint">Modo manual: o circuito volta pro primeiro hub digitado no final. Modo automático: digite quais hubs entram (qualquer ordem) e ele testa todas as combinações, escolhendo a de maior (lucro total − penalidade × jumps totais). Penalidade 0 = ordena só pelo lucro.</div>
+  <div class="hint">Modo manual: segue a ordem da lista (use ↑↓) e volta pro primeiro no final. Modo automático: testa todas as ordens dos locais incluídos (máx. <span id="maxOpt">8</span>) e escolhe a de maior (lucro total − penalidade × jumps totais). Penalidade 0 = ordena só pelo lucro.</div>
   <div id="circuitResult"></div>
 </div>
 
 <script>
 let opportunities = [];
+let locations = [];        // [{id, name, kind, category, tradable, warning, ...}]
+let circuitOrder = [];     // ids na ordem do circuito
+let circuitIncluded = {};  // id -> bool
 let selectedIdx = null;
 let pollTimer = null;
 
-async function loadSettings() {
-  const r = await fetch('/api/settings');
-  const s = await r.json();
-  document.getElementById('origin').value = s.origin_system || 'Jita';
-  document.getElementById('avoidLowsec').checked = s.avoid_lowsec !== false;
+const CATEGORY_LABEL = { npc: 'NPC', corp: 'Corp', alliance: 'Aliança', blue: 'Blue', neutral: 'Neutra', red: 'Red' };
+
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function fmt(n) {
   return Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function accounting() { return parseInt(document.getElementById('accounting').value || '0', 10); }
+function locName(id) { const l = locations.find(l => l.id === id); return l ? l.name : String(id); }
+
+async function postJSON(url, body) {
+  const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await resp.json().catch(() => ({ error: 'Resposta inválida do servidor (' + resp.status + ').' }));
+  return { resp, data };
+}
+
+async function loadSettings() {
+  try {
+    const s = await (await fetch('/api/settings')).json();
+    document.getElementById('origin').value = s.origin_system || 'Jita';
+    document.getElementById('avoidLowsec').checked = s.avoid_lowsec !== false;
+    document.getElementById('maxOpt').textContent = s.max_optimize_locations;
+  } catch (e) { /* servidor ainda subindo: mantém os padrões */ }
+}
+
 async function startScan() {
-  const accounting = parseInt(document.getElementById('accounting').value || '0', 10);
   const btn = document.getElementById('scanBtn');
   btn.disabled = true;
   document.getElementById('status').textContent = 'Iniciando...';
-
-  const resp = await fetch('/api/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accounting })
+  const { resp, data } = await postJSON('/api/scan', {
+    accounting: accounting(),
+    include_structures: document.getElementById('includeStructures').checked,
   });
-
-  if (resp.status === 409) {
-    document.getElementById('status').textContent = 'Já tem um scan rodando.';
+  if (!resp.ok) {
+    document.getElementById('status').textContent = data.error || 'Erro ao iniciar.';
     btn.disabled = false;
     return;
   }
-
   pollTimer = setInterval(pollStatus, 1000);
 }
 
 async function pollStatus() {
-  const r = await fetch('/api/scan/status');
-  const s = await r.json();
-
+  let s;
+  try {
+    s = await (await fetch('/api/scan/status')).json();
+  } catch (e) {
+    clearInterval(pollTimer);
+    document.getElementById('scanBtn').disabled = false;
+    document.getElementById('status').textContent = 'Servidor não respondeu: ' + e;
+    return;
+  }
   const lastLog = s.log && s.log.length ? s.log[s.log.length - 1] : '';
-  document.getElementById('status').textContent =
-    s.status === 'running' ? ('Escaneando... ' + lastLog) : lastLog;
+  document.getElementById('status').textContent = s.status === 'running' ? ('Escaneando... ' + lastLog) : lastLog;
 
   if (s.status === 'done') {
     clearInterval(pollTimer);
     document.getElementById('scanBtn').disabled = false;
-    opportunities = s.opportunities;
-    renderTable();
-    document.getElementById('status').textContent = opportunities.length + ' oportunidade(s) encontrada(s).';
+    applySnapshot(s);
   } else if (s.status === 'error') {
     clearInterval(pollTimer);
     document.getElementById('scanBtn').disabled = false;
     document.getElementById('status').textContent = 'Erro: ' + s.error;
   }
+}
+
+function applySnapshot(s) {
+  opportunities = s.opportunities;
+  locations = s.locations;
+  const ids = locations.map(l => l.id);
+  circuitOrder = circuitOrder.filter(id => ids.includes(id)).concat(ids.filter(id => !circuitOrder.includes(id)));
+  locations.forEach(l => { if (!(l.id in circuitIncluded)) circuitIncluded[l.id] = l.tradable; });
+  selectedIdx = null;
+  document.getElementById('routeBtn').disabled = true;
+  document.getElementById('selectedInfo').textContent = 'Nenhum item selecionado.';
+  renderLocations();
+  renderTable();
+  renderCircuitList();
+}
+
+function renderLocations() {
+  const body = document.getElementById('locBody');
+  body.innerHTML = '';
+  locations.forEach(l => {
+    const tr = document.createElement('tr');
+    if (!l.tradable) tr.className = 'off';
+    tr.innerHTML =
+      '<td><input type="checkbox" ' + (l.tradable ? 'checked' : '') + '></td>' +
+      '<td>' + esc(l.name) + '</td>' +
+      '<td><span class="badge ' + esc(l.category) + '">' + esc(CATEGORY_LABEL[l.category] || l.category) + '</span></td>' +
+      '<td class="warn">' + esc(l.warning || '') + '</td>';
+    tr.querySelector('input').onchange = (ev) => toggleLocation(l.id, ev.target.checked);
+    body.appendChild(tr);
+  });
+}
+
+async function toggleLocation(id, tradable) {
+  document.getElementById('status').textContent = 'Recalculando...';
+  const { data } = await postJSON('/api/locations/toggle', { id, tradable, accounting: accounting() });
+  if (data.error) { document.getElementById('status').textContent = 'Erro: ' + data.error; return; }
+  circuitIncluded[id] = tradable;
+  applySnapshot(data);
+  document.getElementById('status').textContent = opportunities.length + ' oportunidade(s) encontrada(s).';
 }
 
 function renderTable() {
@@ -197,14 +303,14 @@ function renderTable() {
     tr.dataset.idx = i;
     const qtyClass = o.max_qty_now <= 2 ? 'low-qty' : '';
     tr.innerHTML =
-      '<td>' + o.name + '</td>' +
-      '<td>' + o.buy_hub + '</td>' +
+      '<td>' + esc(o.name) + '</td>' +
+      '<td>' + esc(o.buy_hub) + '</td>' +
       '<td>' + fmt(o.buy_price) + '</td>' +
-      '<td>' + o.sell_hub + '</td>' +
+      '<td>' + esc(o.sell_hub) + '</td>' +
       '<td>' + fmt(o.sell_price) + '</td>' +
       '<td>' + fmt(o.profit_per_unit) + '</td>' +
       '<td>' + o.margin_pct.toFixed(1) + '%</td>' +
-      '<td class="' + qtyClass + '">' + o.max_qty_now + '</td>' +
+      '<td class="' + qtyClass + '">' + esc(o.max_qty_now) + '</td>' +
       '<td>' + fmt(o.max_profit_now) + '</td>';
     tr.onclick = () => selectRow(i);
     body.appendChild(tr);
@@ -227,100 +333,112 @@ function selectRow(i) {
 async function calcRoute() {
   if (selectedIdx === null) return;
   const o = opportunities[selectedIdx];
-  const origin = document.getElementById('origin').value.trim();
-  const avoidLowsec = document.getElementById('avoidLowsec').checked;
-
-  document.getElementById('routeResult').textContent = 'Calculando rotas...';
+  const out = document.getElementById('routeResult');
+  out.textContent = 'Calculando rotas...';
   document.getElementById('routeBtn').disabled = true;
 
   try {
-    const resp = await fetch('/api/route', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin, buy_hub: o.buy_hub, sell_hub: o.sell_hub, avoid_lowsec: avoidLowsec })
+    const { data } = await postJSON('/api/route', {
+      origin: document.getElementById('origin').value.trim(),
+      buy_location_id: o.buy_location_id,
+      sell_location_id: o.sell_location_id,
+      avoid_lowsec: document.getElementById('avoidLowsec').checked,
     });
-    const data = await resp.json();
-
     if (data.error) {
-      document.getElementById('routeResult').textContent = 'Erro: ' + data.error;
+      out.textContent = 'Erro: ' + data.error;
     } else {
-      const l1 = data.leg1, l2 = data.leg2;
-      document.getElementById('routeResult').textContent =
+      out.textContent =
         'Trecho 1 — até ' + o.buy_hub + ' (comprar):\n' +
-        l1.jumps + ' jump(s): ' + l1.systems.join(' -> ') + '\n\n' +
+        data.leg1.jumps + ' jump(s): ' + data.leg1.systems.join(' -> ') + '\n\n' +
         'Trecho 2 — ' + o.buy_hub + ' até ' + o.sell_hub + ' (vender):\n' +
-        l2.jumps + ' jump(s): ' + l2.systems.join(' -> ');
+        data.leg2.jumps + ' jump(s): ' + data.leg2.systems.join(' -> ');
     }
   } catch (e) {
-    document.getElementById('routeResult').textContent = 'Erro de rede: ' + e;
+    out.textContent = 'Erro de rede: ' + e;
   } finally {
     document.getElementById('routeBtn').disabled = false;
   }
 }
 
+function renderCircuitList() {
+  const box = document.getElementById('circuitList');
+  box.innerHTML = '';
+  circuitOrder.forEach((id, pos) => {
+    const l = locations.find(x => x.id === id);
+    if (!l || !l.tradable) return;
+    const row = document.createElement('div');
+    row.className = 'circ-row';
+    row.innerHTML =
+      '<input type="checkbox" ' + (circuitIncluded[id] ? 'checked' : '') + '>' +
+      '<button class="secondary" title="Subir">↑</button><button class="secondary" title="Descer">↓</button>' +
+      '<span>' + esc(l.name) + '</span>';
+    const [chk, up, down] = row.querySelectorAll('input, button');
+    chk.onchange = (ev) => { circuitIncluded[id] = ev.target.checked; };
+    up.onclick = () => moveCircuit(pos, -1);
+    down.onclick = () => moveCircuit(pos, +1);
+    box.appendChild(row);
+  });
+  if (!box.children.length) box.innerHTML = '<div class="hint">Nenhum local marcado para contabilizar.</div>';
+}
+
+function moveCircuit(pos, delta) {
+  const to = pos + delta;
+  if (to < 0 || to >= circuitOrder.length) return;
+  [circuitOrder[pos], circuitOrder[to]] = [circuitOrder[to], circuitOrder[pos]];
+  renderCircuitList();
+}
+
 function toggleAutoOrder() {
-  const auto = document.getElementById('autoOrder').checked;
-  document.getElementById('jumpPenalty').disabled = !auto;
-  document.getElementById('hubOrderLabel').textContent = auto ? 'Hubs a incluir (qualquer ordem)' : 'Ordem dos hubs';
+  document.getElementById('jumpPenalty').disabled = !document.getElementById('autoOrder').checked;
 }
 
 async function calcCircuit() {
-  const hubs = document.getElementById('hubOrder').value.split(',').map(s => s.trim()).filter(Boolean);
-  const cargoM3 = parseFloat(document.getElementById('cargoM3').value || '0');
-  const budgetIsk = parseFloat(document.getElementById('budgetIsk').value || '0');
-  const accounting = parseInt(document.getElementById('accounting').value || '0', 10);
+  const ids = circuitOrder.filter(id => circuitIncluded[id] && (locations.find(l => l.id === id) || {}).tradable);
   const autoOrder = document.getElementById('autoOrder').checked;
-  const jumpPenalty = parseFloat(document.getElementById('jumpPenalty').value || '0');
-  const avoidLowsec = document.getElementById('avoidLowsec').checked;
+  const common = {
+    cargo_m3: parseFloat(document.getElementById('cargoM3').value || '0'),
+    budget_isk: parseFloat(document.getElementById('budgetIsk').value || '0'),
+    accounting: accounting(),
+  };
 
   const btn = document.getElementById('circuitBtn');
   const out = document.getElementById('circuitResult');
   btn.disabled = true;
   out.textContent = autoOrder
-    ? 'Testando combinações de ordem (busca volume + distância entre os hubs, pode levar um instante)...'
+    ? 'Testando combinações de ordem (busca volume + distância entre os locais, pode levar um instante)...'
     : 'Calculando circuito (busca volume dos itens candidatos, pode levar um instante)...';
 
   try {
-    const endpoint = autoOrder ? '/api/circuit/optimize' : '/api/circuit';
-    const body = autoOrder
-      ? { hubs, cargo_m3: cargoM3, budget_isk: budgetIsk, accounting, jump_penalty_isk: jumpPenalty, avoid_lowsec: avoidLowsec }
-      : { hub_order: hubs, cargo_m3: cargoM3, budget_isk: budgetIsk, accounting };
+    const { data } = autoOrder
+      ? await postJSON('/api/circuit/optimize', Object.assign({}, common, { location_ids: ids,
+          jump_penalty_isk: parseFloat(document.getElementById('jumpPenalty').value || '0'),
+          avoid_lowsec: document.getElementById('avoidLowsec').checked }))
+      : await postJSON('/api/circuit', Object.assign({}, common, { location_order: ids }));
 
-    const resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const data = await resp.json();
-
-    if (data.error) {
-      out.textContent = 'Erro: ' + data.error;
-      return;
-    }
+    if (data.error) { out.textContent = 'Erro: ' + data.error; return; }
 
     let html = '';
     if (autoOrder) {
+      const names = data.order.map(locName);
       html += '<div style="margin:10px 0;font-weight:600;color:var(--good)">Melhor ordem encontrada: ' +
-        data.order.join(' → ') + ' → ' + data.order[0] +
-        ' — lucro total: ' + fmt(data.total_profit) + ' ISK, ' + data.total_jumps + ' jump(s) no total</div>';
+        esc(names.join(' → ') + ' → ' + names[0]) +
+        ' — lucro total: ' + fmt(data.total_profit) + ' ISK, ' + esc(data.total_jumps) + ' jump(s) no total</div>';
     } else {
       html += '<div style="margin:10px 0;font-weight:600;color:var(--good)">Lucro total do circuito completo: ' +
         fmt(data.total_profit) + ' ISK</div>';
     }
 
     data.legs.forEach(leg => {
-      html += '<div style="margin:14px 0 6px;font-weight:600">' + leg.from + ' → ' + leg.to +
+      html += '<div style="margin:14px 0 6px;font-weight:600">' + esc(leg.from) + ' → ' + esc(leg.to) +
         ' — comprar aqui, vender lá (lucro da perna: ' + fmt(leg.leg_profit) + ' ISK)</div>';
-
       if (!leg.items.length) {
         html += '<div class="hint">Nenhum item rentável encontrado pra essa perna com o budget/cargo informados.</div>';
         return;
       }
-
-      html += '<table><thead><tr><th>Item</th><th>Qtd</th><th>Preço compra</th><th>Preço venda</th>' +
+      html += '<table><thead><tr><th>Item</th><th>Qtd</th><th>Preço compra (médio)</th><th>Receita líquida/un</th>' +
         '<th>Volume total</th><th>Custo total</th><th>Lucro total</th></tr></thead><tbody>';
       leg.items.forEach(it => {
-        html += '<tr><td>' + it.name + '</td><td>' + it.qty + '</td><td>' + fmt(it.buy_price) + '</td>' +
+        html += '<tr><td>' + esc(it.name) + '</td><td>' + esc(it.qty) + '</td><td>' + fmt(it.buy_price) + '</td>' +
           '<td>' + fmt(it.sell_price) + '</td><td>' + fmt(it.total_volume) + '</td>' +
           '<td>' + fmt(it.total_cost) + '</td><td>' + fmt(it.total_profit) + '</td></tr>';
       });
@@ -328,7 +446,6 @@ async function calcCircuit() {
       html += '<div class="hint">Cargo usado: ' + fmt(leg.cargo_used) + ' / ' + fmt(leg.cargo_total) +
         ' m³ — ISK gasto: ' + fmt(leg.isk_spent) + ' / ' + fmt(leg.isk_budget) + '</div>';
     });
-
     out.innerHTML = html;
   } catch (e) {
     out.textContent = 'Erro de rede: ' + e;
@@ -337,7 +454,116 @@ async function calcCircuit() {
   }
 }
 
+let ssoInfo = null;
+
+function fillSetup() {
+  if (!ssoInfo) return;
+  document.getElementById('devLink').href = ssoInfo.developers_url;
+  document.getElementById('cbUrl').textContent = ssoInfo.callback_url;
+  document.getElementById('scopeList').textContent = ssoInfo.scopes.join(' ');
+}
+
+function toggleSetup(show, cancellable = true) {
+  document.getElementById('ssoSetup').style.display = show ? 'block' : 'none';
+  document.getElementById('cancelSetup').style.display = show && cancellable ? 'inline-block' : 'none';
+  document.getElementById('setupMsg').textContent = '';
+}
+
+async function copyText(id, btn) {
+  const text = document.getElementById(id).textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'copiado!';
+  } catch (e) {
+    window.prompt('Copie:', text);   // navegador sem permissão de clipboard
+  }
+  setTimeout(() => { btn.textContent = id === 'cbUrl' ? 'copiar' : 'copiar lista'; }, 1500);
+}
+
+async function saveClientId() {
+  const input = document.getElementById('clientIdInput');
+  const { data } = await postJSON('/api/sso/client-id', { client_id: input.value.trim() });
+  if (data.error) { document.getElementById('setupMsg').textContent = data.error; return; }
+  input.value = '';
+  loadCharacters(data);
+}
+
+async function loadCharacters(data) {
+  const bar = document.getElementById('charBar');
+  try {
+    data = data || await (await fetch('/api/characters')).json();
+  } catch (e) { bar.innerHTML = '<span class="warn">Não deu pra carregar personagens.</span>'; return; }
+
+  ssoInfo = data.sso;
+  fillSetup();
+  const changeLink = data.sso.from_env ? '' :
+    '<a href="#" style="color:var(--muted);font-size:12px" onclick="toggleSetup(true);return false">' +
+    'trocar app EVE (' + esc(data.sso.client_id_hint) + ')</a>';
+
+  if (!data.configured) {
+    bar.innerHTML = '<a href="/login"><button>Entrar com EVE Online</button></a>' +
+      '<span class="hint" style="margin:0">Falta o Client ID do app EVE (passo único, abaixo). ' +
+      'Sem login, só as estações NPC são escaneadas.</span>';
+    toggleSetup(true, false);
+    return;
+  }
+  toggleSetup(false);
+  if (new URLSearchParams(location.search).has('setup')) history.replaceState(null, '', '/');
+  if (!data.characters.length) {
+    bar.innerHTML = '<a href="/login"><button>Entrar com EVE Online</button></a>' +
+      '<span class="hint" style="margin:0">Login libera mercados de estruturas e standings.</span>' + changeLink;
+    return;
+  }
+  const options = data.characters.map(c =>
+    '<option value="' + esc(c.character_id) + '"' + (c.active ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('');
+  bar.innerHTML = '<label>Personagem</label><select id="charSel">' + options + '</select>' +
+    '<a href="/login"><button class="secondary">Adicionar personagem</button></a>' +
+    '<button class="secondary" id="logoutBtn">Sair deste personagem</button>' + changeLink;
+  document.getElementById('charSel').onchange = async (ev) => {
+    const { data } = await postJSON('/api/characters/active', { character_id: parseInt(ev.target.value, 10) });
+    loadCharacters(data);
+  };
+  document.getElementById('logoutBtn').onclick = async () => {
+    const id = parseInt(document.getElementById('charSel').value, 10);
+    const { data } = await postJSON('/api/characters/logout', { character_id: id });
+    loadCharacters(data);
+  };
+}
+
+function renderRegions(data) {
+  const box = document.getElementById('regionList');
+  box.innerHTML = '';
+  Object.keys(data.extra_regions).forEach(name => {
+    const chip = document.createElement('span');
+    chip.className = 'badge';
+    chip.style.marginRight = '6px';
+    chip.innerHTML = esc(name) + ' <a href="#" style="color:var(--muted)" title="Remover">×</a>';
+    chip.querySelector('a').onclick = async (ev) => {
+      ev.preventDefault();
+      const { data } = await postJSON('/api/scope/regions', { remove: name });
+      renderRegions(data);
+    };
+    box.appendChild(chip);
+  });
+}
+
+async function addRegion() {
+  const input = document.getElementById('regionInput');
+  const name = input.value.trim();
+  if (!name) return;
+  const { data } = await postJSON('/api/scope/regions', { add: name });
+  if (data.error) { document.getElementById('status').textContent = 'Erro: ' + data.error; return; }
+  input.value = '';
+  renderRegions(data);
+}
+
+async function loadScope() {
+  try { renderRegions(await (await fetch('/api/scope')).json()); } catch (e) { /* ignora */ }
+}
+
 loadSettings();
+loadCharacters();
+loadScope();
 </script>
 </body>
 </html>
