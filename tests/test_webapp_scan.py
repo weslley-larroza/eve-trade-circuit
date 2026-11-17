@@ -32,7 +32,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(webapp.esi_client, "resolve_type_names", lambda ids: {34: "Tritanium"})
     monkeypatch.setattr(sso, "active_character_id", lambda: 42)
     monkeypatch.setattr(sso, "get_access_token", lambda cid=None: "tok")
-    monkeypatch.setattr(discover, "scope_regions", lambda cid, log=None: {REGION})
+    monkeypatch.setattr(discover, "scope_regions", lambda cid, extra=(), log=None: {REGION})
     monkeypatch.setattr(discover, "discover", lambda cid, region_orders=(), log=None: {FRIEND: ["corp"], ENEMY: ["public"]})
     monkeypatch.setattr(access, "probe", lambda *a, **k: {})
     monkeypatch.setattr(access, "accessible_markets", lambda cid, regions=None: {
@@ -69,3 +69,11 @@ def test_scan_without_structures_only_hubs(app):
     webapp._run_scan(0, include_structures=False)
     s = app.get("/api/scan/status").get_json()
     assert [l["name"] for l in s["locations"]] == ["Jita"]
+
+
+def test_scope_regions_add_remove(app, monkeypatch):
+    monkeypatch.setattr(webapp.esi_client, "resolve_region_ids",
+                        lambda names: {"Domain": 10000043} if names == ["Domain"] else {})
+    assert app.post("/api/scope/regions", json={"add": "Domain"}).get_json() == {"extra_regions": {"Domain": 10000043}}
+    assert app.post("/api/scope/regions", json={"add": "Nope"}).status_code == 400
+    assert app.post("/api/scope/regions", json={"remove": "Domain"}).get_json() == {"extra_regions": {}}

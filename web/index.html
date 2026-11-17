@@ -86,9 +86,17 @@
   <div class="controls">
     <label>Nível Accounting</label>
     <input type="number" id="accounting" value="0" min="0" max="5" style="width:50px">
+    <label><input type="checkbox" id="includeStructures" checked> Incluir estruturas (requer login)</label>
     <button id="scanBtn" onclick="startScan()">Escanear mercado</button>
     <span id="status">Pronto.</span>
   </div>
+  <div class="controls" style="margin-top:8px">
+    <label>Escopo de estruturas: região onde o personagem está +</label>
+    <span id="regionList"></span>
+    <input type="text" id="regionInput" placeholder="ex.: Domain" style="width:140px">
+    <button class="secondary" onclick="addRegion()">Adicionar região</button>
+  </div>
+  <div class="hint">Raio em jumps e alcance de jump freighter chegam na próxima fase (precisa do mapa do universo).</div>
 </div>
 
 <div class="panel">
@@ -158,7 +166,7 @@ let pollTimer = null;
 const CATEGORY_LABEL = { npc: 'NPC', corp: 'Corp', alliance: 'Aliança', blue: 'Blue', neutral: 'Neutra', red: 'Red' };
 
 function esc(v) {
-  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function fmt(n) {
@@ -187,7 +195,10 @@ async function startScan() {
   const btn = document.getElementById('scanBtn');
   btn.disabled = true;
   document.getElementById('status').textContent = 'Iniciando...';
-  const { resp, data } = await postJSON('/api/scan', { accounting: accounting() });
+  const { resp, data } = await postJSON('/api/scan', {
+    accounting: accounting(),
+    include_structures: document.getElementById('includeStructures').checked,
+  });
   if (!resp.ok) {
     document.getElementById('status').textContent = data.error || 'Erro ao iniciar.';
     btn.disabled = false;
@@ -380,10 +391,10 @@ async function calcCircuit() {
 
   try {
     const { data } = autoOrder
-      ? await postJSON('/api/circuit/optimize', { ...common, location_ids: ids,
+      ? await postJSON('/api/circuit/optimize', Object.assign({}, common, { location_ids: ids,
           jump_penalty_isk: parseFloat(document.getElementById('jumpPenalty').value || '0'),
-          avoid_lowsec: document.getElementById('avoidLowsec').checked })
-      : await postJSON('/api/circuit', { ...common, location_order: ids });
+          avoid_lowsec: document.getElementById('avoidLowsec').checked }))
+      : await postJSON('/api/circuit', Object.assign({}, common, { location_order: ids }));
 
     if (data.error) { out.textContent = 'Erro: ' + data.error; return; }
 
@@ -456,8 +467,40 @@ async function loadCharacters(data) {
   };
 }
 
+function renderRegions(data) {
+  const box = document.getElementById('regionList');
+  box.innerHTML = '';
+  Object.keys(data.extra_regions).forEach(name => {
+    const chip = document.createElement('span');
+    chip.className = 'badge';
+    chip.style.marginRight = '6px';
+    chip.innerHTML = esc(name) + ' <a href="#" style="color:var(--muted)" title="Remover">×</a>';
+    chip.querySelector('a').onclick = async (ev) => {
+      ev.preventDefault();
+      const { data } = await postJSON('/api/scope/regions', { remove: name });
+      renderRegions(data);
+    };
+    box.appendChild(chip);
+  });
+}
+
+async function addRegion() {
+  const input = document.getElementById('regionInput');
+  const name = input.value.trim();
+  if (!name) return;
+  const { data } = await postJSON('/api/scope/regions', { add: name });
+  if (data.error) { document.getElementById('status').textContent = 'Erro: ' + data.error; return; }
+  input.value = '';
+  renderRegions(data);
+}
+
+async function loadScope() {
+  try { renderRegions(await (await fetch('/api/scope')).json()); } catch (e) { /* ignora */ }
+}
+
 loadSettings();
 loadCharacters();
+loadScope();
 </script>
 </body>
 </html>

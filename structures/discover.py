@@ -37,8 +37,8 @@ def character_region(character_id: int) -> int | None:
     return esi_client.get_system_info(loc["solar_system_id"])["region_id"]
 
 
-def scope_regions(character_id: int | None, log: Log = print) -> set[int]:
-    regions = {int(r) for r in local_settings.load()["extra_region_ids"]}
+def scope_regions(character_id: int | None, extra_region_ids: Iterable[int] = (), log: Log = print) -> set[int]:
+    regions = {int(r) for r in local_settings.load()["extra_region_ids"]} | {int(r) for r in extra_region_ids}
     if character_id:
         try:
             here = character_region(character_id)

@@ -128,6 +128,11 @@ def _bad_input(exc):
 
 
 # --- Locais ------------------------------------------------------------------
+def _extra_regions() -> dict[str, int]:
+    """Regiões extras escolhidas na interface: {nome: region_id}."""
+    return _settings.get("extra_regions", {})
+
+
 def _toggles() -> dict[str, bool]:
     return _settings.get("location_toggles", {})
 
@@ -144,7 +149,7 @@ def _structure_stage(src: sources.OrderBookSource, character_id: int, log) -> li
     Login ativo: escopo (região do personagem + extras) → descoberta →
     teste de acesso → classificação. Devolve as estruturas utilizáveis.
     """
-    regions = discover.scope_regions(character_id, log=log)
+    regions = discover.scope_regions(character_id, _extra_regions().values(), log=log)
     if not regions:
         log("Sem região no escopo (localização indisponível e nenhuma região extra) — só hubs NPC.")
         return []
@@ -296,6 +301,27 @@ def set_active_character():
 def logout_character():
     sso.logout(_character_id(request.get_json(silent=True) or {}))
     return characters()
+
+
+@app.route("/api/scope", methods=["GET"])
+def get_scope():
+    return jsonify({"extra_regions": _extra_regions()})
+
+
+@app.route("/api/scope/regions", methods=["POST"])
+def edit_scope_regions():
+    """{add: "Nome da região"} ou {remove: "Nome da região"}."""
+    data = request.get_json(silent=True) or {}
+    regions = dict(_extra_regions())
+    if data.get("add"):
+        found = esi_client.resolve_region_ids([str(data["add"])])
+        if not found:
+            raise BadInput(f"Região '{data['add']}' não encontrada (use o nome em inglês, ex.: The Forge).")
+        regions.update(found)
+    if data.get("remove"):
+        regions.pop(str(data["remove"]), None)
+    _settings.set("extra_regions", regions)
+    return get_scope()
 
 
 @app.route("/api/settings", methods=["GET"])
